@@ -623,6 +623,7 @@ func TestPipeliner(t *testing.T) {
 		p.JSONToggle(ctx, "1", "1")
 		p.JSONType(ctx, "1", "1")
 		p.SlaveOf(ctx, "NO", "ONE")
+		p.ReplicaOf(ctx, "NO", "ONE")
 		p.SlowLogGet(ctx, 1)
 		p.SlowLogReset(ctx)
 		p.ClusterMyShardID(ctx)
@@ -632,7 +633,7 @@ func TestPipeliner(t *testing.T) {
 			Args: []any{"1", "2"},
 		})
 
-		if n := len(p.rets); n != 491 {
+		if n := len(p.rets); n != 492 {
 			t.Fatalf("unexpected pipeline calls: %v", n)
 		}
 		for i, cmd := range p.rets {

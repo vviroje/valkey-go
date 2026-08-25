@@ -355,6 +355,7 @@ type CoreCmdable interface {
 	ShutdownSave(ctx context.Context) *StatusCmd
 	ShutdownNoSave(ctx context.Context) *StatusCmd
 	SlaveOf(ctx context.Context, host, port string) *StatusCmd
+	ReplicaOf(ctx context.Context, host, port string) *StatusCmd
 	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	SlowLogReset(ctx context.Context) *StatusCmd
 	Time(ctx context.Context) *TimeCmd
@@ -2942,6 +2943,12 @@ func (c *Compat) ShutdownNoSave(ctx context.Context) *StatusCmd {
 
 func (c *Compat) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
 	cmd := c.client.B().Arbitrary("SLAVEOF").Args(host, port).Build()
+	resp := c.client.Do(ctx, cmd)
+	return newStatusCmd(resp)
+}
+
+func (c *Compat) ReplicaOf(ctx context.Context, host, port string) *StatusCmd {
+	cmd := c.client.B().Arbitrary("REPLICAOF").Args(host, port).Build()
 	resp := c.client.Do(ctx, cmd)
 	return newStatusCmd(resp)
 }
