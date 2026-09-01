@@ -3,6 +3,7 @@ package valkey
 import (
 	"context"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/valkey-io/valkey-go/internal/util"
@@ -24,6 +25,77 @@ func defaultRetryDelayFn(attempts int, _ Completed, _ error) time.Duration {
 	base := 1 << min(defaultMaxRetries, attempts)
 	jitter := util.FastRand(base)
 	return min(defaultMaxRetryDelay, time.Duration(base+jitter)*time.Microsecond)
+}
+
+// DecorrelatedJitterDelayFn creates a decorrelated jitter backoff function for connection dialing:
+// sleep = min(maxDelay, rand(base, prevSleep * 3))
+// Ref: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+func DecorrelatedJitterDelayFn(base, maxDelay time.Duration) DialerRetryBackoffFn {
+	if base <= 0 {
+		base = 100 * time.Millisecond
+	}
+	if maxDelay <= 0 {
+		maxDelay = 3 * time.Second
+	}
+
+	var mu sync.Mutex
+	prev := base
+
+	return func(attempt int) time.Duration {
+		if attempt < 0 {
+			return 0
+		}
+		mu.Lock()
+		maxInterval := prev * 3
+		if maxInterval > maxDelay {
+			maxInterval = maxDelay
+		}
+		var next time.Duration
+		if maxInterval > base {
+			next = base + time.Duration(util.FastRand(int(maxInterval-base)))
+		} else {
+			next = base
+		}
+		prev = next
+		mu.Unlock()
+
+		return min(maxDelay, next)
+	}
+}
+
+// DecorrelatedJitterRetryDelayFn creates a decorrelated jitter backoff function for command retries:
+// sleep = min(maxDelay, rand(base, prevSleep * 3))
+func DecorrelatedJitterRetryDelayFn(base, maxDelay time.Duration) RetryDelayFn {
+	if base <= 0 {
+		base = 10 * time.Millisecond
+	}
+	if maxDelay <= 0 {
+		maxDelay = defaultMaxRetryDelay
+	}
+
+	var mu sync.Mutex
+	prev := base
+
+	return func(attempts int, _ Completed, _ error) time.Duration {
+		if attempts <= 0 {
+			return 0
+		}
+		mu.Lock()
+		maxInterval := prev * 3
+		if maxInterval > maxDelay {
+			maxInterval = maxDelay
+		}
+		var next time.Duration
+		if maxInterval > base {
+			next = base + time.Duration(util.FastRand(int(maxInterval-base)))
+		} else {
+			next = base
+		}
+		prev = next
+		mu.Unlock()
+
+		return min(maxDelay, next)
+	}
 }
 
 type retryHandler interface {
