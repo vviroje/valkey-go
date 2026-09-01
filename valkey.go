@@ -97,9 +97,28 @@ var (
 type ReadNodeSelectorFunc func(slot uint16, nodes []NodeInfo) int
 type ReplicaSelectorFunc func(slot uint16, replicas []NodeInfo) int
 
+// DialerRetryBackoffFn returns the delay before the next connection retry attempt.
+type DialerRetryBackoffFn func(attempt int) time.Duration
+
 // ClientOption should be passed to NewClient to construct a Client
 type ClientOption struct {
 	TLSConfig *tls.Config
+
+	// DialerRetries is the maximum connection retry attempts during dial before escalating the error to the caller.
+	// Default is 0 (fail-fast without retrying).
+	DialerRetries int
+
+	// DialerRetryTimeout is the base backoff duration applied between consecutive dial attempts.
+	// Default is 100ms.
+	DialerRetryTimeout time.Duration
+
+	// DialerRetryBackoff is a custom backoff algorithm (e.g., Full Jitter, Exponential with Cap) to disperse reconnect bursts.
+	// If nil and DialerRetries > 0, DecorrelatedJitterDelayFn is used with DialerRetryTimeout and a 3-second cap.
+	DialerRetryBackoff DialerRetryBackoffFn
+
+	// UseDecorrelatedJitter switches the default command retry backoff algorithm from legacy Equal Jitter
+	// to Decorrelated Jittered Exponential Backoff.
+	UseDecorrelatedJitter bool
 
 	// DialFn allows for a custom function to be used to create net.Conn connections
 	// Deprecated: use DialCtxFn instead.
@@ -547,8 +566,18 @@ func NewClient(option ClientOption) (client Client, err error) {
 	if option.PipelineMultiplex > MaxPipelineMultiplex {
 		return nil, ErrWrongPipelineMultiplex
 	}
+	if option.DialerRetryTimeout <= 0 {
+		option.DialerRetryTimeout = 100 * time.Millisecond
+	}
+	if option.DialerRetryBackoff == nil {
+		option.DialerRetryBackoff = DecorrelatedJitterDelayFn(option.DialerRetryTimeout, 3*time.Second)
+	}
 	if option.RetryDelay == nil {
-		option.RetryDelay = defaultRetryDelayFn
+		if option.UseDecorrelatedJitter {
+			option.RetryDelay = DecorrelatedJitterRetryDelayFn(10*time.Millisecond, defaultMaxRetryDelay)
+		} else {
+			option.RetryDelay = defaultRetryDelayFn
+		}
 	}
 	if option.Sentinel.MasterSet != "" {
 		option.PipelineMultiplex = singleClientMultiplex(option.PipelineMultiplex)
@@ -602,6 +631,36 @@ func makeConn(dst string, opt *ClientOption) conn {
 }
 
 func dial(ctx context.Context, dst string, opt *ClientOption) (conn net.Conn, err error) {
+	maxAttempts := max(0, opt.DialerRetries)
+	for attempt := 0; attempt <= maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		conn, err = dialOnce(ctx, dst, opt)
+		if err == nil {
+			return conn, nil
+		}
+
+		if attempt == maxAttempts {
+			break
+		}
+
+		backoff := opt.DialerRetryBackoff(attempt)
+		if backoff > 0 {
+			tm := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				tm.Stop()
+				return nil, ctx.Err()
+			case <-tm.C:
+			}
+		}
+	}
+	return nil, err
+}
+
+func dialOnce(ctx context.Context, dst string, opt *ClientOption) (conn net.Conn, err error) {
 	if opt.DialCtxFn != nil {
 		return opt.DialCtxFn(ctx, dst, &opt.Dialer, opt.TLSConfig)
 	}
