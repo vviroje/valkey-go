@@ -641,7 +641,7 @@ func TestPipeliner(t *testing.T) {
 				t.Fatalf("unexpected pipeline placeholder err(%d): %v", i, err)
 			}
 		}
-		if n := len(p.comp.client.(*proxy).cmds); n != 491 {
+		if n := len(p.comp.client.(*proxy).cmds); n != 492 {
 			t.Fatalf("unexpected pipeline commands: %v", n)
 		}
 		var pipeline [][]string
@@ -1160,6 +1160,7 @@ var golden = `[
     ["JSON.TOGGLE","1","1"],
     ["JSON.TYPE","1","1"],
     ["SLAVEOF","NO","ONE"],
+	["REPLICAOF","NO","ONE"],
     ["SLOWLOG","GET","1"],
     ["SLOWLOG","RESET"],
     ["CLUSTER","MYSHARDID"],
