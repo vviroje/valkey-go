@@ -695,6 +695,26 @@ func testCmd(resp3 bool) {
 		cmd := adapter.InfoMap(ctx)
 		Expect(cmd.Err()).NotTo(HaveOccurred())
 	})
+
+	It("parseInfoString", func() {
+		txt := `#server
+redis_version:6.2.5
+used_memory:1024
+#clients
+connected_clients:10
+`
+		got := parseInfoString(txt)
+		want := map[string]map[string]string{
+			"server": {
+				"redis_version": "6.2.5",
+				"used_memory":   "1024",
+			},
+			"clients": {
+				"connected_clients": "10",
+			},
+		}
+		Expect(got).To(Equal(want))
+	})
 }
 
 func TestGeoSearchQueryArgs(t *testing.T) {
@@ -907,6 +927,22 @@ func TestFormatMs(t *testing.T) {
 	}
 }
 
+func TestParseInfoString(t *testing.T) {
+	txt := `#server
+redis_version:6.2.5
+used_memory:1024
+#clients
+connected_clients:10
+`
+	got := parseInfoString(txt)
+	if got["server"]["redis_version"] != "6.2.5" || got["server"]["used_memory"] != "1024" {
+		t.Fatalf("unexpected server section: %v", got["server"])
+	}
+	if got["clients"]["connected_clients"] != "10" {
+		t.Fatalf("unexpected clients section: %v", got["clients"])
+	}
+}
+
 func TestCommandErrorHandling(t *testing.T) {
 	mockRes := mock.ErrorResult(errors.New("initial error"))
 
@@ -915,6 +951,14 @@ func TestCommandErrorHandling(t *testing.T) {
 		command  func() error
 		expected string
 	}{
+		{
+			name: "StringStringStringMapCmd",
+			command: func() error {
+				cmd := newStringStringStringMapCmd(mockRes)
+				return cmd.Err()
+			},
+			expected: "initial error",
+		},
 		{
 			name: "JSONSliceCmd",
 			command: func() error {

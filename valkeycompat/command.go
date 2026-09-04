@@ -926,13 +926,50 @@ type StringStringStringMapCmd struct {
 	baseCmd[map[string]map[string]string]
 }
 
+func parseInfoString(txt string) map[string]map[string]string {
+	out := make(map[string]map[string]string)
+	section := "default"
+	for _, l := range strings.Split(txt, "\n") {
+		line := strings.TrimSpace(l)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(line), "txt:") {
+			line = strings.TrimSpace(line[len("txt:"):])
+		}
+		if strings.HasPrefix(line, "#") {
+			sec := strings.TrimSpace(strings.TrimLeft(line, "#"))
+			if sec == "" {
+				section = "default"
+			} else {
+				section = sec
+			}
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		k := strings.TrimSpace(parts[0])
+		v := strings.TrimSpace(parts[1])
+		if k == "" {
+			continue
+		}
+		if _, ok := out[section]; !ok {
+			out[section] = make(map[string]string)
+		}
+		out[section][k] = v
+	}
+	return out
+}
+
 func (cmd *StringStringStringMapCmd) from(res valkey.ValkeyResult) {
-	val, err := res.AsStrStrMap()
+	val, err := res.ToString()
 	cmd.SetErr(err)
 	if err != nil {
 		return
 	}
-	cmd.SetVal(val)
+	cmd.SetVal(parseInfoString(val))
 	cmd.setIsCacheHit(res.IsCacheHit())
 }
 
