@@ -842,3 +842,181 @@ func ExampleNewClient_sentinel() {
 	})
 	defer client.Close()
 }
+
+func TestDial_Retries(t *testing.T) {
+	t.Run("no retries (DialerRetries == 0) fails immediately", func(t *testing.T) {
+		var attempts int
+		expectedErr := errors.New("dial failed")
+		opt := &ClientOption{
+			DialerRetries: 0,
+			DialCtxFn: func(ctx context.Context, dst string, d *net.Dialer, cfg *tls.Config) (net.Conn, error) {
+				attempts++
+				return nil, expectedErr
+			},
+		}
+		conn, err := dial(context.Background(), "127.0.0.1:0", opt)
+		if conn != nil {
+			t.Fatalf("expected nil conn")
+		}
+		if !errors.Is(err, expectedErr) {
+			t.Fatalf("expected %v, got %v", expectedErr, err)
+		}
+		if attempts != 1 {
+			t.Fatalf("expected 1 attempt, got %d", attempts)
+		}
+	})
+
+	t.Run("retry succeeds after failures", func(t *testing.T) {
+		var attempts int
+		c1, c2 := net.Pipe()
+		defer c1.Close()
+		defer c2.Close()
+
+		var backoffAttempts []int
+		opt := &ClientOption{
+			DialerRetries: 3,
+			DialerRetryBackoff: func(attempt int) time.Duration {
+				backoffAttempts = append(backoffAttempts, attempt)
+				return time.Millisecond
+			},
+			DialCtxFn: func(ctx context.Context, dst string, d *net.Dialer, cfg *tls.Config) (net.Conn, error) {
+				attempts++
+				if attempts < 3 {
+					return nil, errors.New("temporary error")
+				}
+				return c1, nil
+			},
+		}
+		conn, err := dial(context.Background(), "127.0.0.1:0", opt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if conn != c1 {
+			t.Fatalf("expected connection c1")
+		}
+		if attempts != 3 {
+			t.Fatalf("expected 3 attempts, got %d", attempts)
+		}
+		if len(backoffAttempts) != 2 || backoffAttempts[0] != 0 || backoffAttempts[1] != 1 {
+			t.Fatalf("unexpected backoff attempts: %v", backoffAttempts)
+		}
+	})
+
+	t.Run("retry exhausted returns last error", func(t *testing.T) {
+		var attempts int
+		expectedErr := errors.New("permanent dial error")
+		opt := &ClientOption{
+			DialerRetries: 2,
+			DialerRetryBackoff: func(attempt int) time.Duration {
+				return time.Millisecond
+			},
+			DialCtxFn: func(ctx context.Context, dst string, d *net.Dialer, cfg *tls.Config) (net.Conn, error) {
+				attempts++
+				return nil, expectedErr
+			},
+		}
+		conn, err := dial(context.Background(), "127.0.0.1:0", opt)
+		if conn != nil {
+			t.Fatalf("expected nil conn")
+		}
+		if !errors.Is(err, expectedErr) {
+			t.Fatalf("expected %v, got %v", expectedErr, err)
+		}
+		if attempts != 3 {
+			t.Fatalf("expected 3 attempts, got %d", attempts)
+		}
+	})
+
+	t.Run("context canceled before dial", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		var attempts int
+		opt := &ClientOption{
+			DialerRetries: 3,
+			DialCtxFn: func(ctx context.Context, dst string, d *net.Dialer, cfg *tls.Config) (net.Conn, error) {
+				attempts++
+				return nil, errors.New("should not be called")
+			},
+		}
+		conn, err := dial(ctx, "127.0.0.1:0", opt)
+		if conn != nil {
+			t.Fatalf("expected nil conn")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+		if attempts != 0 {
+			t.Fatalf("expected 0 attempts, got %d", attempts)
+		}
+	})
+
+	t.Run("context canceled during backoff", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var attempts int
+		opt := &ClientOption{
+			DialerRetries: 3,
+			DialerRetryBackoff: func(attempt int) time.Duration {
+				cancel()
+				return 5 * time.Second
+			},
+			DialCtxFn: func(ctx context.Context, dst string, d *net.Dialer, cfg *tls.Config) (net.Conn, error) {
+				attempts++
+				return nil, errors.New("first dial error")
+			},
+		}
+		start := time.Now()
+		conn, err := dial(ctx, "127.0.0.1:0", opt)
+		elapsed := time.Since(start)
+
+		if conn != nil {
+			t.Fatalf("expected nil conn")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+		if attempts != 1 {
+			t.Fatalf("expected 1 attempt, got %d", attempts)
+		}
+		if elapsed > time.Second {
+			t.Fatalf("expected dial to abort quickly on context cancel, took %v", elapsed)
+		}
+	})
+}
+
+func TestNewClient_DialerRetryOptions(t *testing.T) {
+	defer ShouldNotLeak(SetupLeakDetection())
+
+	t.Run("retries during NewClient", func(t *testing.T) {
+		var dials int
+		opt := ClientOption{
+			InitAddress:   []string{"127.0.0.1:0"},
+			DialerRetries: 2,
+			DialerRetryBackoff: func(attempt int) time.Duration {
+				return time.Millisecond
+			},
+			DialCtxFn: func(ctx context.Context, s string, dialer *net.Dialer, config *tls.Config) (conn net.Conn, err error) {
+				dials++
+				return nil, errors.New("dial error")
+			},
+		}
+
+		_, err := NewClient(opt)
+		if err == nil {
+			t.Fatalf("expected dial error")
+		}
+		// 1 initial dial + 2 retries = 3
+		if dials != 3 {
+			t.Fatalf("expected 3 dial attempts, got %d", dials)
+		}
+	})
+
+	t.Run("defaults for DialerRetryTimeout and DialerRetryBackoff", func(t *testing.T) {
+		opt := ClientOption{
+			InitAddress: []string{"127.0.0.1:0"},
+		}
+		// Check that NewClient sets default backoff without panic
+		_, _ = NewClient(opt)
+	})
+}
