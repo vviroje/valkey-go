@@ -625,6 +625,7 @@ func TestPipeliner(t *testing.T) {
 		p.JSONType(ctx, "1", "1")
 		p.SlaveOf(ctx, "NO", "ONE")
 		p.SlowLogGet(ctx, 1)
+		p.SlowLogLen(ctx)
 		p.SlowLogReset(ctx)
 		p.ClusterMyShardID(ctx)
 		p.ModuleLoadex(ctx, &ModuleLoadexConfig{
@@ -1162,6 +1163,7 @@ var golden = `[
     ["JSON.TYPE","1","1"],
     ["SLAVEOF","NO","ONE"],
     ["SLOWLOG","GET","1"],
+	["SLOWLOG","LEN"],
     ["SLOWLOG","RESET"],
     ["CLUSTER","MYSHARDID"],
     ["MODULE","LOADEX","/","CONFIG","k","v","ARGS","1","2"]
