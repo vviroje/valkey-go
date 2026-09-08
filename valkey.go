@@ -100,6 +100,14 @@ type ReplicaSelectorFunc func(slot uint16, replicas []NodeInfo) int
 // DialerRetryBackoffFn returns the delay before the next connection retry attempt.
 type DialerRetryBackoffFn func(attempt int) time.Duration
 
+// FullJitterRetryDelayFn is an alternative RetryDelay option that delays the next retry exponentially with Full Jitter.
+// Maximum delay is 1 second.
+func FullJitterRetryDelayFn(attempts int, cmd Completed, err error) time.Duration {
+	return defaultFullJitterRetryDelayFn(attempts, cmd, err)
+}
+
+var defaultFullJitterRetryDelayFn = fullJitterRetryDelayFn(10*time.Millisecond, defaultMaxRetryDelay)
+
 // ClientOption should be passed to NewClient to construct a Client
 type ClientOption struct {
 	TLSConfig *tls.Config
@@ -108,17 +116,17 @@ type ClientOption struct {
 	// Default is 0 (fail-fast without retrying).
 	DialerRetries int
 
-	// DialerRetryTimeout is the base backoff duration applied between consecutive dial attempts.
+	// DialerRetryBaseDelay is the base backoff duration applied between consecutive dial attempts.
 	// Default is 100ms.
-	DialerRetryTimeout time.Duration
+	DialerRetryBaseDelay time.Duration
+
+	// DialerRetryMaxDelay is the maximum backoff duration ceiling applied between consecutive dial attempts.
+	// Default is 3s.
+	DialerRetryMaxDelay time.Duration
 
 	// DialerRetryBackoff is a custom backoff algorithm (e.g., Full Jitter, Exponential with Cap) to disperse reconnect bursts.
-	// If nil and DialerRetries > 0, DecorrelatedJitterDelayFn is used with DialerRetryTimeout and a 3-second cap.
+	// If nil and DialerRetries > 0, fullJitterDelayFn is used with DialerRetryBaseDelay and DialerRetryMaxDelay.
 	DialerRetryBackoff DialerRetryBackoffFn
-
-	// UseDecorrelatedJitter switches the default command retry backoff algorithm from legacy Equal Jitter
-	// to Decorrelated Jittered Exponential Backoff.
-	UseDecorrelatedJitter bool
 
 	// DialFn allows for a custom function to be used to create net.Conn connections
 	// Deprecated: use DialCtxFn instead.
@@ -143,7 +151,8 @@ type ClientOption struct {
 	AuthCredentialsFn func(AuthCredentialsContext) (AuthCredentials, error)
 
 	// RetryDelay is the function that returns the delay that should be used before retrying the attempt.
-	// The default is an exponential backoff with a maximum delay of 1 second.
+	// The default is an exponential backoff with Equal Jitter and a maximum delay of 1 second (defaultRetryDelayFn).
+	// FullJitterRetryDelayFn (Full Jitter, max delay 1s) is also available.
 	// Only used when DisableRetry is false.
 	RetryDelay RetryDelayFn
 
@@ -566,18 +575,17 @@ func NewClient(option ClientOption) (client Client, err error) {
 	if option.PipelineMultiplex > MaxPipelineMultiplex {
 		return nil, ErrWrongPipelineMultiplex
 	}
-	if option.DialerRetryTimeout <= 0 {
-		option.DialerRetryTimeout = 100 * time.Millisecond
+	if option.DialerRetryBaseDelay <= 0 {
+		option.DialerRetryBaseDelay = 100 * time.Millisecond
+	}
+	if option.DialerRetryMaxDelay <= 0 {
+		option.DialerRetryMaxDelay = 3 * time.Second
 	}
 	if option.DialerRetryBackoff == nil {
-		option.DialerRetryBackoff = DecorrelatedJitterDelayFn(option.DialerRetryTimeout, 3*time.Second)
+		option.DialerRetryBackoff = fullJitterDelayFn(option.DialerRetryBaseDelay, option.DialerRetryMaxDelay)
 	}
 	if option.RetryDelay == nil {
-		if option.UseDecorrelatedJitter {
-			option.RetryDelay = DecorrelatedJitterRetryDelayFn(10*time.Millisecond, defaultMaxRetryDelay)
-		} else {
-			option.RetryDelay = defaultRetryDelayFn
-		}
+		option.RetryDelay = defaultRetryDelayFn
 	}
 	if option.Sentinel.MasterSet != "" {
 		option.PipelineMultiplex = singleClientMultiplex(option.PipelineMultiplex)

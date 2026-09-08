@@ -119,7 +119,7 @@ func TestRetrier_WaitOrSkipRetry(t *testing.T) {
 			},
 		}
 
-		shouldRetry := r.WaitOrSkipRetry(nil, 0, Completed{}, nil)
+		shouldRetry := r.WaitOrSkipRetry(context.Background(), 0, Completed{}, nil)
 		if shouldRetry {
 			t.Error("WaitOrSkipRetry() = true; want false")
 		}
@@ -132,7 +132,7 @@ func TestRetrier_WaitOrSkipRetry(t *testing.T) {
 			},
 		}
 
-		shouldRetry := r.WaitOrSkipRetry(nil, 0, Completed{}, nil)
+		shouldRetry := r.WaitOrSkipRetry(context.Background(), 0, Completed{}, nil)
 		if !shouldRetry {
 			t.Error("WaitOrSkipRetry() = false; want true")
 		}
@@ -218,19 +218,19 @@ func TestRetrier_WaitOrSkipRetry(t *testing.T) {
 	})
 }
 
-func TestDecorrelatedJitterDelayFn(t *testing.T) {
+func TestFullJitterDelayFn(t *testing.T) {
 	t.Run("default values when base or maxDelay <= 0", func(t *testing.T) {
-		fn := DecorrelatedJitterDelayFn(0, 0)
+		fn := fullJitterDelayFn(0, 0)
 		for i := 0; i < 50; i++ {
 			d := fn(i)
-			if d < 100*time.Millisecond || d > 3*time.Second {
-				t.Fatalf("expected delay between 100ms and 3s, got %v", d)
+			if d < 0 || d > 3*time.Second {
+				t.Fatalf("expected delay between 0 and 3s, got %v", d)
 			}
 		}
 	})
 
 	t.Run("negative attempt returns 0", func(t *testing.T) {
-		fn := DecorrelatedJitterDelayFn(50*time.Millisecond, 500*time.Millisecond)
+		fn := fullJitterDelayFn(50*time.Millisecond, 500*time.Millisecond)
 		if d := fn(-1); d != 0 {
 			t.Fatalf("expected 0 for negative attempt, got %v", d)
 		}
@@ -239,13 +239,13 @@ func TestDecorrelatedJitterDelayFn(t *testing.T) {
 	t.Run("bounds and variation", func(t *testing.T) {
 		base := 50 * time.Millisecond
 		maxDelay := 500 * time.Millisecond
-		fn := DecorrelatedJitterDelayFn(base, maxDelay)
+		fn := fullJitterDelayFn(base, maxDelay)
 
 		delays := make(map[time.Duration]bool)
 		for i := 0; i < 100; i++ {
 			d := fn(i)
-			if d < base || d > maxDelay {
-				t.Fatalf("attempt %d: delay %v out of bounds [%v, %v]", i, d, base, maxDelay)
+			if d < 0 || d > maxDelay {
+				t.Fatalf("attempt %d: delay %v out of bounds [0, %v]", i, d, maxDelay)
 			}
 			delays[d] = true
 		}
@@ -254,8 +254,30 @@ func TestDecorrelatedJitterDelayFn(t *testing.T) {
 		}
 	})
 
+	t.Run("attempt scaling within ceiling", func(t *testing.T) {
+		base := 10 * time.Millisecond
+		maxDelay := 80 * time.Millisecond
+		fn := fullJitterDelayFn(base, maxDelay)
+
+		// attempt 0: temp = 10ms -> delay in [0, 10ms)
+		for i := 0; i < 20; i++ {
+			d := fn(0)
+			if d < 0 || d > 10*time.Millisecond {
+				t.Fatalf("attempt 0 delay %v exceeds base %v", d, base)
+			}
+		}
+
+		// attempt 100: temp = maxDelay (80ms), does not overflow
+		for i := 0; i < 20; i++ {
+			d := fn(100)
+			if d < 0 || d > maxDelay {
+				t.Fatalf("attempt 100 delay %v exceeds maxDelay %v", d, maxDelay)
+			}
+		}
+	})
+
 	t.Run("concurrent safety", func(t *testing.T) {
-		fn := DecorrelatedJitterDelayFn(10*time.Millisecond, 100*time.Millisecond)
+		fn := fullJitterDelayFn(10*time.Millisecond, 100*time.Millisecond)
 		var wg sync.WaitGroup
 		for i := 0; i < 20; i++ {
 			wg.Add(1)
@@ -263,7 +285,7 @@ func TestDecorrelatedJitterDelayFn(t *testing.T) {
 				defer wg.Done()
 				for j := 0; j < 50; j++ {
 					d := fn(attempt)
-					if d < 10*time.Millisecond || d > 100*time.Millisecond {
+					if d < 0 || d > 100*time.Millisecond {
 						t.Errorf("out of bounds: %v", d)
 					}
 				}
@@ -271,62 +293,55 @@ func TestDecorrelatedJitterDelayFn(t *testing.T) {
 		}
 		wg.Wait()
 	})
+
+	t.Run("default 3s ceiling and sub-millisecond safety", func(t *testing.T) {
+		fn := fullJitterDelayFn(100*time.Millisecond, 3*time.Second)
+		for i := 0; i < 50; i++ {
+			d := fn(i)
+			if d < 0 || d > 3*time.Second {
+				t.Fatalf("delay %v out of bounds [0, 3s]", d)
+			}
+		}
+
+		subMsFn := fullJitterDelayFn(500*time.Microsecond, 500*time.Microsecond)
+		for i := 0; i < 20; i++ {
+			d := subMsFn(i)
+			if d < 0 || d > 500*time.Microsecond {
+				t.Fatalf("sub-ms delay %v out of bounds", d)
+			}
+		}
+	})
 }
 
-func TestDecorrelatedJitterRetryDelayFn(t *testing.T) {
-	t.Run("default values when base or maxDelay <= 0", func(t *testing.T) {
-		fn := DecorrelatedJitterRetryDelayFn(0, 0)
-		for i := 1; i < 50; i++ {
+func TestFullJitterRetryDelayFn(t *testing.T) {
+	t.Run("bounds and defaults", func(t *testing.T) {
+		fn := fullJitterRetryDelayFn(0, 0)
+		for i := 0; i < 50; i++ {
 			d := fn(i, Completed{}, nil)
-			if d < 10*time.Millisecond || d > defaultMaxRetryDelay {
-				t.Fatalf("expected delay between 10ms and %v, got %v", defaultMaxRetryDelay, d)
+			if d < 0 || d > 3*time.Second {
+				t.Fatalf("expected delay between 0 and 3s, got %v", d)
 			}
 		}
 	})
 
-	t.Run("non-positive attempt returns 0", func(t *testing.T) {
-		fn := DecorrelatedJitterRetryDelayFn(10*time.Millisecond, 500*time.Millisecond)
-		if d := fn(0, Completed{}, nil); d != 0 {
-			t.Fatalf("expected 0 for attempt 0, got %v", d)
-		}
-		if d := fn(-1, Completed{}, nil); d != 0 {
-			t.Fatalf("expected 0 for attempt -1, got %v", d)
-		}
-	})
-
-	t.Run("bounds and variation", func(t *testing.T) {
-		base := 20 * time.Millisecond
-		maxDelay := 300 * time.Millisecond
-		fn := DecorrelatedJitterRetryDelayFn(base, maxDelay)
-
-		delays := make(map[time.Duration]bool)
-		for i := 1; i <= 100; i++ {
+	t.Run("custom base and maxDelay", func(t *testing.T) {
+		base := 5 * time.Millisecond
+		maxDelay := 100 * time.Millisecond
+		fn := fullJitterRetryDelayFn(base, maxDelay)
+		for i := 0; i < 50; i++ {
 			d := fn(i, Completed{}, nil)
-			if d < base || d > maxDelay {
-				t.Fatalf("attempt %d: delay %v out of bounds [%v, %v]", i, d, base, maxDelay)
+			if d < 0 || d > maxDelay {
+				t.Fatalf("attempt %d: delay %v out of bounds [0, %v]", i, d, maxDelay)
 			}
-			delays[d] = true
-		}
-		if len(delays) < 10 {
-			t.Fatalf("expected diverse delays due to jitter, got only %d unique values", len(delays))
 		}
 	})
+}
 
-	t.Run("concurrent safety", func(t *testing.T) {
-		fn := DecorrelatedJitterRetryDelayFn(10*time.Millisecond, 100*time.Millisecond)
-		var wg sync.WaitGroup
-		for i := 0; i < 20; i++ {
-			wg.Add(1)
-			go func(attempt int) {
-				defer wg.Done()
-				for j := 0; j < 50; j++ {
-					d := fn(attempt, Completed{}, nil)
-					if d < 10*time.Millisecond || d > 100*time.Millisecond {
-						t.Errorf("out of bounds: %v", d)
-					}
-				}
-			}(i + 1)
+func TestFullJitterRetryDelayOption(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		d := FullJitterRetryDelayFn(i, Completed{}, nil)
+		if d < 0 || d > defaultMaxRetryDelay {
+			t.Fatalf("FullJitterRetryDelayFn(%d) = %v; want [0, %v]", i, d, defaultMaxRetryDelay)
 		}
-		wg.Wait()
-	})
+	}
 }

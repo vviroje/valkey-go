@@ -1012,11 +1012,36 @@ func TestNewClient_DialerRetryOptions(t *testing.T) {
 		}
 	})
 
-	t.Run("defaults for DialerRetryTimeout and DialerRetryBackoff", func(t *testing.T) {
+	t.Run("defaults for DialerRetryBaseDelay and DialerRetryMaxDelay", func(t *testing.T) {
 		opt := ClientOption{
 			InitAddress: []string{"127.0.0.1:0"},
 		}
 		// Check that NewClient sets default backoff without panic
 		_, _ = NewClient(opt)
+	})
+
+	t.Run("custom DialerRetryBaseDelay and DialerRetryMaxDelay", func(t *testing.T) {
+		opt := ClientOption{
+			InitAddress:          []string{"127.0.0.1:0"},
+			DialerRetryBaseDelay: 50 * time.Millisecond,
+			DialerRetryMaxDelay:  500 * time.Millisecond,
+		}
+		_, _ = NewClient(opt)
+	})
+
+	t.Run("assign FullJitterRetryDelayFn to ClientOption", func(t *testing.T) {
+		opt := ClientOption{
+			InitAddress:        []string{"127.0.0.1:0"},
+			DialerRetries:      1,
+			DialerRetryBackoff: fullJitterDelayFn(50*time.Millisecond, time.Second),
+			RetryDelay:         FullJitterRetryDelayFn,
+		}
+		_, _ = NewClient(opt)
+
+		opt2 := ClientOption{
+			InitAddress: []string{"127.0.0.1:0"},
+			RetryDelay:  defaultRetryDelayFn,
+		}
+		_, _ = NewClient(opt2)
 	})
 }

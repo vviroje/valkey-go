@@ -3,7 +3,6 @@ package valkey
 import (
 	"context"
 	"runtime"
-	"sync"
 	"time"
 
 	"github.com/valkey-io/valkey-go/internal/util"
@@ -27,10 +26,9 @@ func defaultRetryDelayFn(attempts int, _ Completed, _ error) time.Duration {
 	return min(defaultMaxRetryDelay, time.Duration(base+jitter)*time.Microsecond)
 }
 
-// DecorrelatedJitterDelayFn creates a decorrelated jitter backoff function for connection dialing:
-// sleep = min(maxDelay, rand(base, prevSleep * 3))
-// Ref: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
-func DecorrelatedJitterDelayFn(base, maxDelay time.Duration) DialerRetryBackoffFn {
+// fullJitterDelayFn creates a full jitter backoff function for connection dialing:
+// sleep = rand(0, min(maxDelay, base * 2^attempt))
+func fullJitterDelayFn(base, maxDelay time.Duration) DialerRetryBackoffFn {
 	if base <= 0 {
 		base = 100 * time.Millisecond
 	}
@@ -38,63 +36,44 @@ func DecorrelatedJitterDelayFn(base, maxDelay time.Duration) DialerRetryBackoffF
 		maxDelay = 3 * time.Second
 	}
 
-	var mu sync.Mutex
-	prev := base
-
 	return func(attempt int) time.Duration {
 		if attempt < 0 {
 			return 0
 		}
-		mu.Lock()
-		maxInterval := prev * 3
-		if maxInterval > maxDelay {
-			maxInterval = maxDelay
-		}
-		var next time.Duration
-		if maxInterval > base {
-			next = base + time.Duration(util.FastRand(int(maxInterval-base)))
+		shift := min(30, attempt)
+		temp := base
+		if shift > 0 {
+			if maxDelay/(1<<shift) < temp {
+				temp = maxDelay
+			} else {
+				temp = min(maxDelay, temp*(1<<shift))
+			}
 		} else {
-			next = base
+			temp = min(maxDelay, temp)
 		}
-		prev = next
-		mu.Unlock()
-
-		return min(maxDelay, next)
+		if temp <= 0 {
+			return 0
+		}
+		ms := temp / time.Millisecond
+		if ms <= 0 {
+			return time.Duration(util.FastRand(int(temp)))
+		}
+		return time.Duration(util.FastRand(int(ms))) * time.Millisecond
 	}
 }
 
-// DecorrelatedJitterRetryDelayFn creates a decorrelated jitter backoff function for command retries:
-// sleep = min(maxDelay, rand(base, prevSleep * 3))
-func DecorrelatedJitterRetryDelayFn(base, maxDelay time.Duration) RetryDelayFn {
+// fullJitterRetryDelayFn creates a full jitter backoff function for command retries:
+// sleep = rand(0, min(maxDelay, base * 2^attempts))
+func fullJitterRetryDelayFn(base, maxDelay time.Duration) RetryDelayFn {
 	if base <= 0 {
 		base = 10 * time.Millisecond
 	}
 	if maxDelay <= 0 {
 		maxDelay = defaultMaxRetryDelay
 	}
-
-	var mu sync.Mutex
-	prev := base
-
+	fn := fullJitterDelayFn(base, maxDelay)
 	return func(attempts int, _ Completed, _ error) time.Duration {
-		if attempts <= 0 {
-			return 0
-		}
-		mu.Lock()
-		maxInterval := prev * 3
-		if maxInterval > maxDelay {
-			maxInterval = maxDelay
-		}
-		var next time.Duration
-		if maxInterval > base {
-			next = base + time.Duration(util.FastRand(int(maxInterval-base)))
-		} else {
-			next = base
-		}
-		prev = next
-		mu.Unlock()
-
-		return min(maxDelay, next)
+		return fn(attempts)
 	}
 }
 
