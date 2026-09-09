@@ -78,6 +78,10 @@ func isLoadingErr(err error) bool {
 	return false
 }
 
+func isConnRetryable(err error) bool {
+	return isLoadingErr(err) || isDialRetryable(err)
+}
+
 func makeMux(dst string, option *ClientOption, dialFn dialFn) *mux {
 	dead := deadFn()
 	connFn := func(ctx context.Context) (net.Conn, error) {
@@ -95,7 +99,7 @@ func makeMux(dst string, option *ClientOption, dialFn dialFn) *mux {
 				if err == nil {
 					return w
 				}
-				if !isLoadingErr(err) || attempt == maxAttempts {
+				if !isConnRetryable(err) || attempt == maxAttempts {
 					dead.error.Store(&errs{error: err})
 					return dead
 				}

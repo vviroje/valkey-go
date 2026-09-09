@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1625,6 +1626,59 @@ func TestMakeMux_RetryOnLoading(t *testing.T) {
 		}
 		if got := atomic.LoadInt32(&attempts); got != 1 {
 			t.Fatalf("expected 1 attempt before cancel, got %d", got)
+		}
+	})
+
+	t.Run("unified retry mixes L4 dial error and L7 LOADING error within single budget", func(t *testing.T) {
+		defer ShouldNotLeak(SetupLeakDetection())
+		var attempts int32
+		option := &ClientOption{
+			DialerRetries: 2, // total attempts allowed = 3 (0, 1, 2)
+			DialerRetryBackoff: func(attempt int) time.Duration {
+				return time.Millisecond
+			},
+		}
+		m := makeMux("", option, func(ctx context.Context, dst string, opt *ClientOption) (net.Conn, error) {
+			att := atomic.AddInt32(&attempts, 1)
+			if att == 1 {
+				// Attempt 1: L4 network drop
+				return nil, syscall.ECONNREFUSED
+			}
+			c1, c2 := net.Pipe()
+			if att == 2 {
+				// Attempt 2: L7 handshake LOADING error
+				go mockLoading(t, c2)
+			} else {
+				// Attempt 3: Handshake succeeds
+				go func() {
+					mock := &valkeyMock{t: t, buf: bufio.NewReader(c2), conn: c2}
+					mock.Expect("HELLO", "3").
+						Reply(slicemsg(
+							'%',
+							[]ValkeyMessage{
+								strmsg('+', "proto"),
+								{typ: ':', intlen: 3},
+							},
+						))
+					mock.Expect("CLIENT", "TRACKING", "ON", "OPTIN").
+						ReplyString("OK")
+					mock.Expect("CLIENT", "SETINFO", "LIB-NAME", LibName).
+						ReplyError("UNKNOWN COMMAND")
+					mock.Expect("CLIENT", "SETINFO", "LIB-VER", LibVer).
+						ReplyError("UNKNOWN COMMAND")
+					mock.Expect("PING").ReplyString("OK")
+					mock.Close()
+				}()
+			}
+			return c1, nil
+		})
+		defer m.Close()
+
+		if err := m.Dial(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := atomic.LoadInt32(&attempts); got != 3 {
+			t.Fatalf("expected exactly 3 total attempts (DialerRetries + 1), got %d", got)
 		}
 	})
 }

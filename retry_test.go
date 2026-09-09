@@ -227,6 +227,12 @@ func TestFullJitterDelayFn(t *testing.T) {
 				t.Fatalf("expected delay between 0 and 3s, got %v", d)
 			}
 		}
+		for i := 0; i < 50; i++ {
+			d := fn(0)
+			if d < 0 || d > 10*time.Millisecond {
+				t.Fatalf("expected attempt 0 delay <= 10ms, got %v", d)
+			}
+		}
 	})
 
 	t.Run("negative attempt returns 0", func(t *testing.T) {

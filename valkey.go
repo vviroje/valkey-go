@@ -12,6 +12,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/valkey-io/valkey-go/internal/util"
@@ -117,7 +118,7 @@ type ClientOption struct {
 	DialerRetries int
 
 	// DialerRetryBaseDelay is the base backoff duration applied between consecutive dial attempts.
-	// Default is 100ms.
+	// Default is 10ms.
 	DialerRetryBaseDelay time.Duration
 
 	// DialerRetryMaxDelay is the maximum backoff duration ceiling applied between consecutive dial attempts.
@@ -576,7 +577,7 @@ func NewClient(option ClientOption) (client Client, err error) {
 		return nil, ErrWrongPipelineMultiplex
 	}
 	if option.DialerRetryBaseDelay <= 0 {
-		option.DialerRetryBaseDelay = 100 * time.Millisecond
+		option.DialerRetryBaseDelay = 10 * time.Millisecond
 	}
 	if option.DialerRetryMaxDelay <= 0 {
 		option.DialerRetryMaxDelay = 3 * time.Second
@@ -638,34 +639,23 @@ func makeConn(dst string, opt *ClientOption) conn {
 	return makeMux(dst, opt, dial)
 }
 
-func dial(ctx context.Context, dst string, opt *ClientOption) (conn net.Conn, err error) {
-	maxAttempts := max(0, opt.DialerRetries)
-	for attempt := 0; attempt <= maxAttempts; attempt++ {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		conn, err = dialOnce(ctx, dst, opt)
-		if err == nil {
-			return conn, nil
-		}
-
-		if attempt == maxAttempts {
-			break
-		}
-
-		backoff := opt.DialerRetryBackoff(attempt)
-		if backoff > 0 {
-			tm := time.NewTimer(backoff)
-			select {
-			case <-ctx.Done():
-				tm.Stop()
-				return nil, ctx.Err()
-			case <-tm.C:
-			}
-		}
+func isDialRetryable(err error) bool {
+	if err == nil {
+		return false
 	}
-	return nil, err
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ETIMEDOUT) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection refused") || strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out")
+}
+
+func dial(ctx context.Context, dst string, opt *ClientOption) (conn net.Conn, err error) {
+	return dialOnce(ctx, dst, opt)
 }
 
 func dialOnce(ctx context.Context, dst string, opt *ClientOption) (conn net.Conn, err error) {

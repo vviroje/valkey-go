@@ -30,7 +30,7 @@ func defaultRetryDelayFn(attempts int, _ Completed, _ error) time.Duration {
 // sleep = rand(0, min(maxDelay, base * 2^attempt))
 func fullJitterDelayFn(base, maxDelay time.Duration) DialerRetryBackoffFn {
 	if base <= 0 {
-		base = 100 * time.Millisecond
+		base = 10 * time.Millisecond
 	}
 	if maxDelay <= 0 {
 		maxDelay = 3 * time.Second
