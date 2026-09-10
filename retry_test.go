@@ -317,6 +317,31 @@ func TestFullJitterDelayFn(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("64-bit duration native resolution and no 32-bit overflow", func(t *testing.T) {
+		// Large duration > math.MaxInt32 nanoseconds (which is ~2.147s)
+		largeFn := fullJitterDelayFn(5*time.Second, 10*time.Second)
+		for i := 0; i < 50; i++ {
+			d := largeFn(i)
+			if d < 0 || d > 10*time.Second {
+				t.Fatalf("large delay %v out of bounds [0, 10s]", d)
+			}
+		}
+
+		// Verify nanosecond resolution (not quantized to millisecond multiples)
+		resFn := fullJitterDelayFn(10*time.Millisecond, 10*time.Millisecond)
+		hasSubMs := false
+		for i := 0; i < 50; i++ {
+			d := resFn(0)
+			if d%time.Millisecond != 0 {
+				hasSubMs = true
+				break
+			}
+		}
+		if !hasSubMs {
+			t.Fatalf("expected nanosecond resolution without millisecond quantization")
+		}
+	})
 }
 
 func TestFullJitterRetryDelayFn(t *testing.T) {

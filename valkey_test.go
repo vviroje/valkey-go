@@ -1145,6 +1145,21 @@ func TestIsDialRetryable(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "syscall.ECONNRESET is retryable",
+			err:      syscall.ECONNRESET,
+			expected: true,
+		},
+		{
+			name:     "wrapped syscall.ECONNRESET is retryable",
+			err:      fmt.Errorf("dial tcp 127.0.0.1:6379: %w", syscall.ECONNRESET),
+			expected: true,
+		},
+		{
+			name:     "string match connection reset is retryable",
+			err:      errors.New("read tcp: connection reset by peer"),
+			expected: true,
+		},
+		{
 			name:     "net.Error with Timeout()=true is retryable",
 			err:      customTimeoutErr{},
 			expected: true,

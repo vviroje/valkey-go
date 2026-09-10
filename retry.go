@@ -54,11 +54,7 @@ func fullJitterDelayFn(base, maxDelay time.Duration) DialerRetryBackoffFn {
 		if temp <= 0 {
 			return 0
 		}
-		ms := temp / time.Millisecond
-		if ms <= 0 {
-			return time.Duration(util.FastRand(int(temp)))
-		}
-		return time.Duration(util.FastRand(int(ms))) * time.Millisecond
+		return time.Duration(util.FastRandInt64(int64(temp)))
 	}
 }
 
