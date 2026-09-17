@@ -1,0 +1,50 @@
+name: benchmark
+on:
+  push:
+    branches:
+      - benchmark
+
+permissions:
+  contents: write
+  deployments: write
+
+jobs:
+  benchmark:
+    name: Run Go benchmark example
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
+        with:
+          go-version: "stable"
+      - name: Run benchmark
+        run: cd examples/go && go test -bench 'Benchmark_Cache_DoCache_Hit|Benchmark_Cache_DoCache_Miss|Benchmark_Cache_MGetCache|Benchmark_Cache_Invalidation|Benchmark_Parallel_DoMulti|BenchmarkClient_B_Allocation|Benchmark_PubSub_Receive|BenchmarkRESP3WireDecoder_Latency|Benchmark_Ring_Multiplexer_Contention|BenchmarkRingBufferMultiplexer_Contention|Benchmark_ZAdd|BenchmarkCommandBuilder_Allocation' | tee output.txt
+
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Go Benchmark
+          tool: 'go'
+          output-file-path: examples/go/output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          # Show alert with commit comment on detecting possible performance regression
+          alert-threshold: '200%'
+          comment-on-alert: true
+          fail-on-alert: true
+          alert-comment-cc-users: '@ktrz'
+
+      - name: Store benchmark result - separate results repo
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Go Benchmark
+          tool: 'go'
+          output-file-path: examples/go/output.txt
+          github-token: ${{ secrets.BENCHMARK_ACTION_BOT_TOKEN }}
+          auto-push: true
+          # Show alert with commit comment on detecting possible performance regression
+          alert-threshold: '200%'
+          comment-on-alert: true
+          fail-on-alert: true
+          alert-comment-cc-users: '@ktrz'
+          gh-repository: 'github.com/benchmark-action/github-action-benchmark-results'
