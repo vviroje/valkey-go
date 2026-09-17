@@ -18,7 +18,7 @@ jobs:
         with:
           go-version: "stable"
       - name: Run benchmark
-        run: cd examples/go && go test -bench 'Benchmark_Cache_DoCache_Hit|Benchmark_Cache_DoCache_Miss|Benchmark_Cache_MGetCache|Benchmark_Cache_Invalidation|Benchmark_Parallel_DoMulti|BenchmarkClient_B_Allocation|Benchmark_PubSub_Receive|BenchmarkRESP3WireDecoder_Latency|Benchmark_Ring_Multiplexer_Contention|BenchmarkRingBufferMultiplexer_Contention|Benchmark_ZAdd|BenchmarkCommandBuilder_Allocation' | tee output.txt
+        run: go test -run=^$ -bench='^(Benchmark_Cache_DoCache_Hit|Benchmark_Cache_DoCache_Miss|Benchmark_Cache_MGetCache|Benchmark_Cache_Invalidation|Benchmark_Parallel_DoMulti|BenchmarkClient_B_Allocation|Benchmark_PubSub_Receive|BenchmarkRESP3WireDecoder_Latency|Benchmark_Ring_Multiplexer_Contention|BenchmarkRingBufferMultiplexer_Contention|Benchmark_ZAdd|BenchmarkCommandBuilder_Allocation)$' -benchmem . ./internal/cmds | tee output.txt
 
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
