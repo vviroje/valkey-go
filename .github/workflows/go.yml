@@ -1,12 +1,15 @@
 name: benchmark
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
   push:
     branches:
       - benchmark
 
 permissions:
-  contents: write
-  deployments: write
+  contents: read
+  pull-requests: write
+  issues: write
 
 jobs:
   benchmark:
@@ -23,14 +26,16 @@ jobs:
           go test -run=^$ -bench='^(Benchmark_Cache_DoCache_Hit|Benchmark_Cache_DoCache_Miss|Benchmark_Cache_MGetCache|Benchmark_Cache_Invalidation|Benchmark_Parallel_DoMulti|BenchmarkClient_B_Allocation|Benchmark_PubSub_Receive|BenchmarkRESP3WireDecoder_Latency|Benchmark_Ring_Multiplexer_Contention|BenchmarkRingBufferMultiplexer_Contention|Benchmark_ZAdd|BenchmarkCommandBuilder_Allocation)$' \
             -benchmem . ./internal/cmds | tee output.txt
 
-      - name: Store benchmark result
+      - name: Display Benchmark in PR
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: Go Benchmark
           tool: 'go'
           output-file-path: output.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
+          auto-push: false
+          comment-always: true
+          summary-always: true
           alert-threshold: '200%'
           comment-on-alert: true
           fail-on-alert: true
