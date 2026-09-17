@@ -7,7 +7,7 @@ on:
       - benchmark
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
 
@@ -64,38 +64,42 @@ jobs:
             // 1. Add to GitHub Actions Job Summary page
             await core.summary.addRaw(body).write();
 
-            // 2. Post as comment on Pull Request (if triggered by PR)
-            if (context.payload.pull_request) {
-              const issueNumber = context.payload.pull_request.number;
-              const { data: comments } = await github.rest.issues.listComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-              });
-
-              const botComment = comments.find(c => c.body && c.body.includes('# 🚀 **Benchmark Results**'));
-
-              if (botComment) {
-                await github.rest.issues.updateComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: botComment.id,
-                  body: body,
-                });
-              } else {
-                await github.rest.issues.createComment({
+            // 2. Post as comment on Pull Request or Commit
+            try {
+              if (context.payload.pull_request) {
+                const issueNumber = context.payload.pull_request.number;
+                const { data: comments } = await github.rest.issues.listComments({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: issueNumber,
+                });
+
+                const botComment = comments.find(c => c.body && c.body.includes('# 🚀 **Benchmark Results**'));
+
+                if (botComment) {
+                  await github.rest.issues.updateComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: botComment.id,
+                    body: body,
+                  });
+                } else {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    body: body,
+                  });
+                }
+              } else if (context.eventName === 'push') {
+                // Post comment on the commit itself when pushing directly to branch
+                await github.rest.repos.createCommitComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: fullSha,
                   body: body,
                 });
               }
-            } else if (context.eventName === 'push') {
-              // Also post comment on the commit itself when pushing directly to branch
-              await github.rest.repos.createCommitComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                commit_sha: fullSha,
-                body: body,
-              });
+            } catch (err) {
+              core.warning(`Failed to post comment (check Repo Settings -> Actions -> General -> Workflow permissions): ${err.message}`);
             }
