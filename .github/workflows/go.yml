@@ -61,35 +61,43 @@ jobs:
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${fullSha}`;
 
-            // Load baseline data to extract main baseline commit and values
+            // Load latest main branch commit and its benchmark baseline
             let mainSha = '';
             let mainUrl = '';
             const baselineMap = {};
             const baselineMemMap = {};
-            try {
-              if (fs.existsSync('.github/benchmark-baseline.json')) {
-                const baselineData = JSON.parse(fs.readFileSync('.github/benchmark-baseline.json', 'utf8'));
-                const entries = baselineData.entries && baselineData.entries.Benchmark ? baselineData.entries.Benchmark : [];
-                
-                // Find previous baseline from main
-                let prevEntry = null;
-                if (entries.length > 0) {
-                  const last = entries[entries.length - 1];
-                  if (last.commit && (last.commit.id === fullSha || last.commit.id.startsWith(shortSha))) {
-                    if (entries.length >= 2) {
-                      prevEntry = entries[entries.length - 2];
-                    }
-                  } else {
-                    prevEntry = last;
-                  }
-                }
 
-                if (prevEntry) {
-                  if (prevEntry.commit && prevEntry.commit.id) {
-                    mainSha = prevEntry.commit.id.substring(0, 7);
-                    mainUrl = prevEntry.commit.url || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${prevEntry.commit.id}`;
-                  }
-                  for (const b of (prevEntry.benches || [])) {
+            // 1. Get latest commit from main branch
+            try {
+              const { data: mainBranch } = await github.rest.repos.getBranch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: 'main',
+              });
+              if (mainBranch && mainBranch.commit) {
+                mainSha = mainBranch.commit.sha.substring(0, 7);
+                mainUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${mainBranch.commit.sha}`;
+              }
+            } catch (err) {
+              console.log('Could not fetch main branch commit:', err.message);
+            }
+
+            // 2. Fetch baseline data from main branch
+            try {
+              const { data: fileData } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.github/benchmark-baseline.json',
+                ref: 'main',
+              });
+
+              if (fileData && fileData.content) {
+                const content = Buffer.from(fileData.content, 'base64').toString('utf8');
+                const baselineData = JSON.parse(content);
+                const entries = baselineData.entries && baselineData.entries.Benchmark ? baselineData.entries.Benchmark : [];
+                if (entries.length > 0) {
+                  const lastEntry = entries[entries.length - 1];
+                  for (const b of (lastEntry.benches || [])) {
                     const suiteName = b.name.split(' ')[0];
                     if (b.name.includes(' - ns/op')) {
                       baselineMap[suiteName] = `${b.value} ${b.unit}`;
@@ -104,7 +112,43 @@ jobs:
                 }
               }
             } catch (err) {
-              console.log('Error reading baseline file:', err);
+              console.log('Baseline not yet committed to main branch; checking local fallback:', err.message);
+              // Fallback to local baseline file if main doesn't have it yet
+              try {
+                if (fs.existsSync('.github/benchmark-baseline.json')) {
+                  const baselineData = JSON.parse(fs.readFileSync('.github/benchmark-baseline.json', 'utf8'));
+                  const entries = baselineData.entries && baselineData.entries.Benchmark ? baselineData.entries.Benchmark : [];
+                  let prevEntry = null;
+                  if (entries.length > 0) {
+                    const last = entries[entries.length - 1];
+                    if (last.commit && (last.commit.id === fullSha || last.commit.id.startsWith(shortSha))) {
+                      if (entries.length >= 2) prevEntry = entries[entries.length - 2];
+                    } else {
+                      prevEntry = last;
+                    }
+                  }
+                  if (prevEntry) {
+                    if (!mainSha && prevEntry.commit && prevEntry.commit.id) {
+                      mainSha = prevEntry.commit.id.substring(0, 7);
+                      mainUrl = prevEntry.commit.url || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${prevEntry.commit.id}`;
+                    }
+                    for (const b of (prevEntry.benches || [])) {
+                      const suiteName = b.name.split(' ')[0];
+                      if (b.name.includes(' - ns/op')) {
+                        baselineMap[suiteName] = `${b.value} ${b.unit}`;
+                      } else if (b.name.includes(' - B/op')) {
+                        if (!baselineMemMap[suiteName]) baselineMemMap[suiteName] = {};
+                        baselineMemMap[suiteName].bOp = b.value;
+                      } else if (b.name.includes(' - allocs/op')) {
+                        if (!baselineMemMap[suiteName]) baselineMemMap[suiteName] = {};
+                        baselineMemMap[suiteName].allocsOp = b.value;
+                      }
+                    }
+                  }
+                }
+              } catch (localErr) {
+                console.log('Local baseline read failed:', localErr.message);
+              }
             }
 
             const lines = raw.split('\n');
