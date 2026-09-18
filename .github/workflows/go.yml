@@ -112,43 +112,7 @@ jobs:
                 }
               }
             } catch (err) {
-              console.log('Baseline not yet committed to main branch; checking local fallback:', err.message);
-              // Fallback to local baseline file if main doesn't have it yet
-              try {
-                if (fs.existsSync('.github/benchmark-baseline.json')) {
-                  const baselineData = JSON.parse(fs.readFileSync('.github/benchmark-baseline.json', 'utf8'));
-                  const entries = baselineData.entries && baselineData.entries.Benchmark ? baselineData.entries.Benchmark : [];
-                  let prevEntry = null;
-                  if (entries.length > 0) {
-                    const last = entries[entries.length - 1];
-                    if (last.commit && (last.commit.id === fullSha || last.commit.id.startsWith(shortSha))) {
-                      if (entries.length >= 2) prevEntry = entries[entries.length - 2];
-                    } else {
-                      prevEntry = last;
-                    }
-                  }
-                  if (prevEntry) {
-                    if (!mainSha && prevEntry.commit && prevEntry.commit.id) {
-                      mainSha = prevEntry.commit.id.substring(0, 7);
-                      mainUrl = prevEntry.commit.url || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${prevEntry.commit.id}`;
-                    }
-                    for (const b of (prevEntry.benches || [])) {
-                      const suiteName = b.name.split(' ')[0];
-                      if (b.name.includes(' - ns/op')) {
-                        baselineMap[suiteName] = `${b.value} ${b.unit}`;
-                      } else if (b.name.includes(' - B/op')) {
-                        if (!baselineMemMap[suiteName]) baselineMemMap[suiteName] = {};
-                        baselineMemMap[suiteName].bOp = b.value;
-                      } else if (b.name.includes(' - allocs/op')) {
-                        if (!baselineMemMap[suiteName]) baselineMemMap[suiteName] = {};
-                        baselineMemMap[suiteName].allocsOp = b.value;
-                      }
-                    }
-                  }
-                }
-              } catch (localErr) {
-                console.log('Local baseline read failed:', localErr.message);
-              }
+              console.log('main branch does not have .github/benchmark-baseline.json yet; displaying NA for main columns:', err.message);
             }
 
             const lines = raw.split('\n');
