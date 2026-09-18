@@ -115,16 +115,16 @@ jobs:
                 const [, name, , nsOp, bOp, allocsOp] = match;
                 const suiteName = name.replace(/-\d+$/, '');
                 const currentNs = `${nsOp} ns/op`;
-                const mainNs = baselineMap[suiteName] ? `${baselineMap[suiteName]}` : '-';
+                const mainNs = baselineMap[suiteName] ? `${baselineMap[suiteName]}` : 'NA';
 
                 const currentMem = (bOp !== undefined && allocsOp !== undefined) 
                   ? `${bOp} B/op, ${allocsOp} allocs/op`
-                  : '-';
+                  : 'NA';
 
                 const mainMemObj = baselineMemMap[suiteName];
                 const mainMem = (mainMemObj && mainMemObj.bOp !== undefined && mainMemObj.allocsOp !== undefined)
                   ? `${mainMemObj.bOp} B/op, ${mainMemObj.allocsOp} allocs/op`
-                  : '-';
+                  : 'NA';
 
                 rows.push(`| \`${suiteName}\` | \`${currentNs}\` | \`${mainNs}\` | \`${currentMem}\` | \`${mainMem}\` |`);
               }
