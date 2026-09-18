@@ -1,10 +1,13 @@
 name: Benchmark CI (Option B)
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
   push:
     branches:
       - main
-      - benchmark
 
 permissions:
   contents: write
@@ -30,13 +33,13 @@ jobs:
             echo '{"lastUpdate":0,"repoUrl":"","entries":{"Benchmark":[]}}' > .github/benchmark-baseline.json
           fi
 
-      # 2. Run the 12 suite benchmarks on the new commit
+      # 2. Run the 12 suite benchmarks on the commit
       - name: Run benchmarks
         run: |
           go test -run=^$ -bench='^(Benchmark_Cache_DoCache_Hit|Benchmark_Cache_DoCache_Miss|Benchmark_Cache_MGetCache|Benchmark_Cache_Invalidation|Benchmark_Parallel_DoMulti|BenchmarkClient_B_Allocation|Benchmark_PubSub_Receive|BenchmarkRESP3WireDecoder_Latency|Benchmark_Ring_Multiplexer_Contention|BenchmarkRingBufferMultiplexer_Contention|Benchmark_ZAdd|BenchmarkCommandBuilder_Allocation)$' \
             -benchmem . ./internal/cmds | tee output.txt
 
-      # 3. Update benchmark baseline file with github-action-benchmark
+      # 3. Update baseline JSON file with github-action-benchmark (After merge / on push only)
       - name: Continuous Benchmark Check & Update
         uses: benchmark-action/github-action-benchmark@v1
         with:
@@ -45,10 +48,10 @@ jobs:
           external-data-json-path: ./.github/benchmark-baseline.json
           skip-fetch-gh-pages: true
           summary-always: true
-          save-data-file: true
+          save-data-file: ${{ github.event_name == 'push' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4. Post results to the merged PR conversation tab (or commit) & Job Summary
+      # 4. Post/Update results in PR conversation tab (and Job Summary)
       - name: Post Results to PR Conversation / Commit
         uses: actions/github-script@v7
         with:
@@ -82,7 +85,7 @@ jobs:
               console.log('Could not fetch main branch commit:', err.message);
             }
 
-            // 2. Fetch baseline data from main branch
+            // 2. Fetch baseline data directly from main branch
             try {
               const { data: fileData } = await github.rest.repos.getContent({
                 owner: context.repo.owner,
@@ -138,12 +141,16 @@ jobs:
               }
             }
 
-            const currentColNs = `Current: [${shortSha}](${commitUrl}) (ns/op)`;
+            const featureBranch = context.payload.pull_request
+              ? context.payload.pull_request.head.ref
+              : 'Current';
+
+            const currentColNs = `${featureBranch} ([${shortSha}](${commitUrl})) (ns/op)`;
             const mainColNs = mainSha 
               ? (mainUrl ? `main ([${mainSha}](${mainUrl})) (ns/op)` : `main (${mainSha}) (ns/op)`)
               : 'main (ns/op)';
 
-            const currentColMem = `Current: [${shortSha}](${commitUrl}) (Memory&Allocations)`;
+            const currentColMem = `${featureBranch} ([${shortSha}](${commitUrl})) (Memory&Allocations)`;
             const mainColMem = mainSha 
               ? (mainUrl ? `main ([${mainSha}](${mainUrl})) (Memory&Allocations)` : `main (${mainSha}) (Memory&Allocations)`)
               : 'main (Memory&Allocations)';
@@ -158,39 +165,64 @@ jobs:
             // 1. Post to GitHub Actions Job Summary tab
             await core.summary.addRaw(body).write();
 
-            // 2. Check if this commit was from a merged PR -> post into PR conversation!
+            // 2. Post or update comment in PR conversation (or commit comment)
             try {
-              const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                commit_sha: fullSha,
-              });
-
-              if (prs.data && prs.data.length > 0) {
-                const prNumber = prs.data[0].number;
-                await github.rest.issues.createComment({
+              let issueNumber = null;
+              if (context.payload.pull_request) {
+                issueNumber = context.payload.pull_request.number;
+              } else if (context.eventName === 'push') {
+                const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: prNumber,
-                  body: body,
+                  commit_sha: fullSha,
                 });
-                console.log(`Successfully posted benchmark results to PR #${prNumber} conversation`);
-              } else {
-                // If push to branch without PR, post comment to the commit itself
+                if (prs.data && prs.data.length > 0) {
+                  issueNumber = prs.data[0].number;
+                }
+              }
+
+              if (issueNumber) {
+                const { data: comments } = await github.rest.issues.listComments({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                });
+
+                const botComment = comments.find(c => c.body && c.body.includes('Benchmark Results'));
+
+                if (botComment) {
+                  await github.rest.issues.updateComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: botComment.id,
+                    body: body,
+                  });
+                  console.log(`Updated benchmark results on PR #${issueNumber}`);
+                } else {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    body: body,
+                  });
+                  console.log(`Created benchmark results comment on PR #${issueNumber}`);
+                }
+              } else if (context.eventName === 'push') {
                 await github.rest.repos.createCommitComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   commit_sha: fullSha,
                   body: body,
                 });
-                console.log(`Successfully posted benchmark results to commit ${shortSha}`);
+                console.log(`Posted comment on commit ${shortSha}`);
               }
             } catch (err) {
-              core.warning(`Could not post comment to PR/commit: ${err.message}`);
+              core.warning(`Could not post comment: ${err.message}`);
             }
 
-      # 5. Commit and push updated baseline back to the branch with [skip ci]
+      # 5. Commit and push updated baseline back to the branch with [skip ci] (Push/Merge only)
       - name: Commit & push updated baseline
+        if: github.event_name == 'push'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
