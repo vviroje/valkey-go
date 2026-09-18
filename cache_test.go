@@ -3,6 +3,8 @@ package valkey
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -203,4 +205,119 @@ func (s *simple) Del(key string) {
 
 func (s *simple) Flush() {
 	s.store = nil
+}
+
+// Benchmark_Cache_LocalHit_Latency benchmarks in-memory client-side cache Hit latency.
+func Benchmark_Cache_LocalHit_Latency(b *testing.B) {
+	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
+	now := time.Now()
+	msg := strmsg('+', strings.Repeat("a", 1024))
+	msg.setExpireAt(now.Add(time.Hour).UnixMilli())
+	store.Update("key", "GET key", msg)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v, _ := store.Flight("key", "GET key", time.Minute, now)
+		_ = v
+	}
+}
+
+// Benchmark_Cache_DoCache_Hit is kept for backwards compatibility.
+func Benchmark_Cache_DoCache_Hit(b *testing.B) {
+	Benchmark_Cache_LocalHit_Latency(b)
+}
+
+// Benchmark_Cache_DoCache_Miss benchmarks fetching from server to populate local cache.
+func Benchmark_Cache_DoCache_Miss(b *testing.B) {
+	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
+	now := time.Now()
+	msg := strmsg('+', "val")
+	msg.setExpireAt(now.Add(time.Hour).UnixMilli())
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := "key_" + strconv.Itoa(i)
+		v, entry := store.Flight(key, "GET "+key, time.Minute, now)
+		if v.typ == 0 && entry == nil {
+			store.Update(key, "GET "+key, msg)
+		}
+	}
+}
+
+// Benchmark_Cache_MGetCache benchmarks mapping keys to memory responses from cache.
+func Benchmark_Cache_MGetCache(b *testing.B) {
+	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
+	now := time.Now()
+	keys := []string{"k1", "k2", "k3", "k4", "k5"}
+	for _, k := range keys {
+		msg := strmsg('+', "val_"+k)
+		msg.setExpireAt(now.Add(time.Hour).UnixMilli())
+		store.Update(k, "GET "+k, msg)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res := make(map[string]ValkeyMessage, len(keys))
+		for _, k := range keys {
+			v, _ := store.Flight(k, "GET "+k, time.Minute, now)
+			res[k] = v
+		}
+		_ = res
+	}
+}
+
+// Benchmark_Cache_Invalidation benchmarks server-assisted cache invalidation via Pub/Sub.
+func Benchmark_Cache_Invalidation(b *testing.B) {
+	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
+	now := time.Now()
+	keys := make([]ValkeyMessage, 100)
+	for i := 0; i < 100; i++ {
+		k := "key_" + strconv.Itoa(i)
+		msg := strmsg('+', "val")
+		msg.setExpireAt(now.Add(time.Hour).UnixMilli())
+		store.Update(k, "GET "+k, msg)
+		keys[i] = strmsg('+', k)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		store.Delete(keys)
+	}
+}
+
+// Benchmark_Cache_Miss_And_Server_Invalidate benchmarks cache miss population across payload gradient and push invalidation.
+func Benchmark_Cache_Miss_And_Server_Invalidate(b *testing.B) {
+	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
+	now := time.Now()
+	payloads := []string{
+		strings.Repeat("a", 64),
+		strings.Repeat("b", 1024),
+		strings.Repeat("c", 64*1024),
+	}
+	keys := make([]string, 100)
+	delMsgs := make([]ValkeyMessage, 100)
+	for i := 0; i < 100; i++ {
+		keys[i] = "inv_key_" + strconv.Itoa(i)
+		delMsgs[i] = strmsg('+', keys[i])
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		k := keys[i%100]
+		p := payloads[i%3]
+		v, entry := store.Flight(k, "GET "+k, time.Minute, now)
+		if v.typ == 0 && entry == nil {
+			msg := strmsg('+', p)
+			msg.setExpireAt(now.Add(time.Hour).UnixMilli())
+			store.Update(k, "GET "+k, msg)
+		}
+		if (i+1)%100 == 0 {
+			store.Delete(delMsgs)
+		}
+	}
 }

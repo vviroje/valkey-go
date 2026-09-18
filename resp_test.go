@@ -700,3 +700,100 @@ func randN(n int) (v int) {
 	}
 	return
 }
+
+// Benchmark_RESP3_Decode_SimpleString benchmarks decoding simple string messages.
+func Benchmark_RESP3_Decode_SimpleString(b *testing.B) {
+	payload := []byte("+OK\r\n")
+	rd := bytes.NewReader(payload)
+	r := bufio.NewReader(rd)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rd.Reset(payload)
+		r.Reset(rd)
+		_, err := readNextMessage(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Benchmark_RESP3_Decode_BulkString_Gradient benchmarks bulk string decoding across 64B, 1KB, and 64KB gradient.
+func Benchmark_RESP3_Decode_BulkString_Gradient(b *testing.B) {
+	p64B := []byte("$64\r\n" + strings.Repeat("x", 64) + "\r\n")
+	p1KB := []byte("$1024\r\n" + strings.Repeat("y", 1024) + "\r\n")
+	p64KB := []byte("$65536\r\n" + strings.Repeat("z", 65536) + "\r\n")
+
+	rd := bytes.NewReader(p1KB)
+	r := bufio.NewReader(rd)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		switch i % 3 {
+		case 0:
+			rd.Reset(p64B)
+		case 1:
+			rd.Reset(p1KB)
+		case 2:
+			rd.Reset(p64KB)
+		}
+		r.Reset(rd)
+		_, err := readNextMessage(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Benchmark_RESP3_Decode_Array benchmarks array decoding with cardinality 10.
+func Benchmark_RESP3_Decode_Array(b *testing.B) {
+	var buf bytes.Buffer
+	buf.WriteString("*10\r\n")
+	for j := 0; j < 10; j++ {
+		buf.WriteString("$4\r\ntest\r\n")
+	}
+	payload := buf.Bytes()
+	rd := bytes.NewReader(payload)
+	r := bufio.NewReader(rd)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rd.Reset(payload)
+		r.Reset(rd)
+		_, err := readNextMessage(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Benchmark_RESP3_Decode_Map benchmarks map decoding with cardinality.
+func Benchmark_RESP3_Decode_Map(b *testing.B) {
+	var buf bytes.Buffer
+	buf.WriteString("%5\r\n")
+	for j := 0; j < 5; j++ {
+		buf.WriteString("$3\r\nkey\r\n$3\r\nval\r\n")
+	}
+	payload := buf.Bytes()
+	rd := bytes.NewReader(payload)
+	r := bufio.NewReader(rd)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rd.Reset(payload)
+		r.Reset(rd)
+		_, err := readNextMessage(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkRESP3WireDecoder_Latency is kept for backwards compatibility.
+func BenchmarkRESP3WireDecoder_Latency(b *testing.B) {
+	Benchmark_RESP3_Decode_SimpleString(b)
+}

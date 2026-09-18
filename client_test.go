@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1762,4 +1763,94 @@ func BenchmarkSingleClient_DoCache(b *testing.B) {
 		b.StopTimer()
 	})
 	client.Close()
+}
+
+func benchmarkPipelining(b *testing.B, concurrency int) {
+	m := &mockConn{
+		DoMultiFn: func(cmd ...Completed) *valkeyresults {
+			res := make([]ValkeyResult, len(cmd))
+			for i := range res {
+				res[i] = NewResult(strmsg('+', "OK"), nil)
+			}
+			return &valkeyresults{s: res}
+		},
+	}
+	client, err := newSingleClient(
+		&ClientOption{InitAddress: []string{""}},
+		m,
+		func(dst string, opt *ClientOption) conn { return m },
+		newRetryer(defaultRetryDelayFn),
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Close()
+
+	payload1KB := strings.Repeat("v", 1024)
+	keys := make([]string, 1000)
+	for i := 0; i < 1000; i++ {
+		keys[i] = "pipe_key_" + strconv.Itoa(i)
+	}
+
+	cmd1 := client.B().Set().Key(keys[0]).Value(payload1KB).Build()
+	cmd2 := client.B().Get().Key(keys[0]).Build()
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	if concurrency <= 1 {
+		for i := 0; i < b.N; i++ {
+			_ = client.DoMulti(ctx, cmd1, cmd2)
+		}
+		return
+	}
+
+	work := make(chan struct{}, b.N)
+	for i := 0; i < b.N; i++ {
+		work <- struct{}{}
+	}
+	close(work)
+
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for c := 0; c < concurrency; c++ {
+		go func() {
+			defer wg.Done()
+			for range work {
+				_ = client.DoMulti(ctx, cmd1, cmd2)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// Benchmark_Pipelining_Concurrency_1 measures single-thread serial pipelining throughput.
+func Benchmark_Pipelining_Concurrency_1(b *testing.B) {
+	benchmarkPipelining(b, 1)
+}
+
+// Benchmark_Pipelining_Concurrency_8 measures auto-pipelining throughput under 8 concurrent goroutines.
+func Benchmark_Pipelining_Concurrency_8(b *testing.B) {
+	benchmarkPipelining(b, 8)
+}
+
+// Benchmark_Pipelining_Concurrency_64 measures auto-pipelining throughput under 64 concurrent goroutines.
+func Benchmark_Pipelining_Concurrency_64(b *testing.B) {
+	benchmarkPipelining(b, 64)
+}
+
+// Benchmark_Parallel_DoMulti is kept for backwards compatibility.
+func Benchmark_Parallel_DoMulti(b *testing.B) {
+	Benchmark_Pipelining_Concurrency_8(b)
+}
+
+// BenchmarkClient_B_Allocation measures the allocation of client.B() command construction.
+func BenchmarkClient_B_Allocation(b *testing.B) {
+	c := &singleClient{cmd: cmds.NewBuilder(cmds.InitSlot)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmd := c.B().Get().Key("benchmark_key").Build()
+		cmds.PutCompleted(cmd)
+	}
 }

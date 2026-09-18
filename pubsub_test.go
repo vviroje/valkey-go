@@ -1,6 +1,8 @@
 package valkey
 
 import (
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -95,4 +97,56 @@ func TestSubs_Unsubscribe(t *testing.T) {
 	if ok {
 		t.Fatalf("unexpected ch unclosed")
 	}
+}
+
+// Benchmark_PubSub_Dispatch_Loop measures blocking message dispatch loop under load across payload gradients.
+func Benchmark_PubSub_Dispatch_Loop(b *testing.B) {
+	s := newSubs()
+	ch, cancel := s.Subscribe([]string{"channel"}, nil)
+	s.Confirm(PubSubSubscription{Channel: "channel"})
+	defer cancel()
+
+	payloads := []string{
+		strings.Repeat("a", 64),
+		strings.Repeat("b", 1024),
+		strings.Repeat("c", 64*1024),
+	}
+	msgs := make([]PubSubMessage, 3)
+	for i := 0; i < 3; i++ {
+		msgs[i] = PubSubMessage{Channel: "channel", Message: payloads[i]}
+	}
+
+	ready := make(chan struct{})
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-done:
+				return
+			case <-ready:
+				s.Publish("channel", msgs[i%3])
+				i++
+			}
+		}
+	}()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ready <- struct{}{}
+		<-ch
+	}
+	b.StopTimer()
+	close(done)
+	wg.Wait()
+}
+
+// Benchmark_PubSub_Receive is kept for backwards compatibility.
+func Benchmark_PubSub_Receive(b *testing.B) {
+	Benchmark_PubSub_Dispatch_Loop(b)
 }
