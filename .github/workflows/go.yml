@@ -51,7 +51,7 @@ jobs:
           skip-fetch-gh-pages: true # Prevents trying to fetch non-existent gh-pages branch
           fail-on-alert: true
           alert-threshold: '130%'   # Alert & fail if regression exceeds +30%
-          comment-always: ${{ github.event_name == 'pull_request' }}
+          comment-always: true
           summary-always: true
           save-data-file: ${{ github.event_name == 'push' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
