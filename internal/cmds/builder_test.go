@@ -2,8 +2,111 @@ package cmds
 
 import (
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 )
+
+var (
+	keysDynamic1000 = func() []string {
+		ks := make([]string, 1000)
+		for i := 0; i < 1000; i++ {
+			ks[i] = "key_" + strconv.Itoa(i)
+		}
+		return ks
+	}()
+	keysTag1000 = func() []string {
+		ks := make([]string, 1000)
+		for i := 0; i < 1000; i++ {
+			ks[i] = "{user:" + strconv.Itoa(i) + "}:profile"
+		}
+		return ks
+	}()
+	keysSameSlot50 = func() []string {
+		ks := make([]string, 50)
+		for i := 0; i < 50; i++ {
+			ks[i] = "{user:1}:key_" + strconv.Itoa(i)
+		}
+		return ks
+	}()
+	payload64B  = strings.Repeat("a", 64)
+	payload1KB  = strings.Repeat("b", 1024)
+	payload64KB = strings.Repeat("c", 64*1024)
+)
+
+// Benchmark_Builder_SingleCommand_DynamicKeys measures single command construction with dynamic keys.
+func Benchmark_Builder_SingleCommand_DynamicKeys(b *testing.B) {
+	builder := NewBuilder(InitSlot)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		k := keysDynamic1000[i%1000]
+		cmd := builder.Set().Key(k).Value(payload1KB).Build()
+		PutCompleted(cmd)
+	}
+}
+
+// Benchmark_Builder_MultiKey_Scaling measures multi-key MGet building across cardinality gradient.
+func Benchmark_Builder_MultiKey_Scaling(b *testing.B) {
+	builder := NewBuilder(InitSlot)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmd := builder.Mget().Key(keysSameSlot50...).Build()
+		PutCompleted(cmd)
+	}
+}
+
+// Benchmark_Builder_ComplexArgs_HSet_ZAdd measures complex argument building with cardinality gradient.
+func Benchmark_Builder_ComplexArgs_HSet_ZAdd(b *testing.B) {
+	builder := NewBuilder(InitSlot)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		z := builder.Zadd().Key(keysDynamic1000[i%1000]).ScoreMember()
+		for j := 0; j < 10; j++ {
+			z = z.ScoreMember(float64(j), keysDynamic1000[j])
+		}
+		cmd := z.Build()
+		PutCompleted(cmd)
+	}
+}
+
+// Benchmark_MemoryPool_PutCompleted_Parallel verifies zero-allocation pool reclamation under concurrency.
+func Benchmark_MemoryPool_PutCompleted_Parallel(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		builder := NewBuilder(InitSlot)
+		i := 0
+		for pb.Next() {
+			k := keysDynamic1000[i%1000]
+			cmd := builder.Get().Key(k).Build()
+			PutCompleted(cmd)
+			i++
+		}
+	})
+}
+
+// Benchmark_Cluster_CRC16_Routing measures CRC16 slot calculation for plain vs {hash_tag} keys.
+func Benchmark_Cluster_CRC16_Routing(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = slot(keysTag1000[i%1000])
+		_ = slot(keysDynamic1000[i%1000])
+	}
+}
+
+// Benchmark_ZAdd is kept for backwards compatibility.
+func Benchmark_ZAdd(b *testing.B) {
+	Benchmark_Builder_ComplexArgs_HSet_ZAdd(b)
+}
+
+// BenchmarkCommandBuilder_Allocation is kept for backwards compatibility.
+func BenchmarkCommandBuilder_Allocation(b *testing.B) {
+	Benchmark_Builder_SingleCommand_DynamicKeys(b)
+}
 
 func TestPutCompleted(t *testing.T) {
 retry:
@@ -170,32 +273,4 @@ func TestVerify(t *testing.T) {
 		}
 	}()
 	cmd1.cs.Verify()
-}
-
-// Benchmark_ZAdd measures sorted sets construction and heavy argument parsing.
-func Benchmark_ZAdd(b *testing.B) {
-	builder := NewBuilder(InitSlot)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cmd := builder.Zadd().Key("myzset").ScoreMember().
-			ScoreMember(1.1, "member1").
-			ScoreMember(2.2, "member2").
-			ScoreMember(3.3, "member3").
-			ScoreMember(4.4, "member4").
-			ScoreMember(5.5, "member5").
-			Build()
-		PutCompleted(cmd)
-	}
-}
-
-// BenchmarkCommandBuilder_Allocation verifies zero-allocation command building.
-func BenchmarkCommandBuilder_Allocation(b *testing.B) {
-	builder := NewBuilder(InitSlot)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cmd := builder.Get().Key("benchmark_key").Build()
-		PutCompleted(cmd)
-	}
 }

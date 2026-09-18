@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1764,8 +1765,7 @@ func BenchmarkSingleClient_DoCache(b *testing.B) {
 	client.Close()
 }
 
-// Benchmark_Parallel_DoMulti measures manual transaction pipelining under parallel client load.
-func Benchmark_Parallel_DoMulti(b *testing.B) {
+func benchmarkPipelining(b *testing.B, concurrency int) {
 	m := &mockConn{
 		DoMultiFn: func(cmd ...Completed) *valkeyresults {
 			res := make([]ValkeyResult, len(cmd))
@@ -1786,17 +1786,62 @@ func Benchmark_Parallel_DoMulti(b *testing.B) {
 	}
 	defer client.Close()
 
-	cmd1 := client.B().Set().Key("k1").Value("v1").Build()
-	cmd2 := client.B().Get().Key("k1").Build()
+	payload1KB := strings.Repeat("v", 1024)
+	keys := make([]string, 1000)
+	for i := 0; i < 1000; i++ {
+		keys[i] = "pipe_key_" + strconv.Itoa(i)
+	}
+
+	cmd1 := client.B().Set().Key(keys[0]).Value(payload1KB).Build()
+	cmd2 := client.B().Get().Key(keys[0]).Build()
+	ctx := context.Background()
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		ctx := context.Background()
-		for pb.Next() {
+	if concurrency <= 1 {
+		for i := 0; i < b.N; i++ {
 			_ = client.DoMulti(ctx, cmd1, cmd2)
 		}
-	})
+		return
+	}
+
+	work := make(chan struct{}, b.N)
+	for i := 0; i < b.N; i++ {
+		work <- struct{}{}
+	}
+	close(work)
+
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for c := 0; c < concurrency; c++ {
+		go func() {
+			defer wg.Done()
+			for range work {
+				_ = client.DoMulti(ctx, cmd1, cmd2)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// Benchmark_Pipelining_Concurrency_1 measures single-thread serial pipelining throughput.
+func Benchmark_Pipelining_Concurrency_1(b *testing.B) {
+	benchmarkPipelining(b, 1)
+}
+
+// Benchmark_Pipelining_Concurrency_8 measures auto-pipelining throughput under 8 concurrent goroutines.
+func Benchmark_Pipelining_Concurrency_8(b *testing.B) {
+	benchmarkPipelining(b, 8)
+}
+
+// Benchmark_Pipelining_Concurrency_64 measures auto-pipelining throughput under 64 concurrent goroutines.
+func Benchmark_Pipelining_Concurrency_64(b *testing.B) {
+	benchmarkPipelining(b, 64)
+}
+
+// Benchmark_Parallel_DoMulti is kept for backwards compatibility.
+func Benchmark_Parallel_DoMulti(b *testing.B) {
+	Benchmark_Pipelining_Concurrency_8(b)
 }
 
 // BenchmarkClient_B_Allocation measures the allocation of client.B() command construction.

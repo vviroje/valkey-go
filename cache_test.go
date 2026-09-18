@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -206,11 +207,11 @@ func (s *simple) Flush() {
 	s.store = nil
 }
 
-// Benchmark_Cache_DoCache_Hit benchmarks nanosecond memory fetches from the local cache.
-func Benchmark_Cache_DoCache_Hit(b *testing.B) {
+// Benchmark_Cache_LocalHit_Latency benchmarks in-memory client-side cache Hit latency.
+func Benchmark_Cache_LocalHit_Latency(b *testing.B) {
 	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
 	now := time.Now()
-	msg := strmsg('+', "val")
+	msg := strmsg('+', strings.Repeat("a", 1024))
 	msg.setExpireAt(now.Add(time.Hour).UnixMilli())
 	store.Update("key", "GET key", msg)
 
@@ -220,6 +221,11 @@ func Benchmark_Cache_DoCache_Hit(b *testing.B) {
 		v, _ := store.Flight("key", "GET key", time.Minute, now)
 		_ = v
 	}
+}
+
+// Benchmark_Cache_DoCache_Hit is kept for backwards compatibility.
+func Benchmark_Cache_DoCache_Hit(b *testing.B) {
+	Benchmark_Cache_LocalHit_Latency(b)
 }
 
 // Benchmark_Cache_DoCache_Miss benchmarks fetching from server to populate local cache.
@@ -280,5 +286,38 @@ func Benchmark_Cache_Invalidation(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		store.Delete(keys)
+	}
+}
+
+// Benchmark_Cache_Miss_And_Server_Invalidate benchmarks cache miss population across payload gradient and push invalidation.
+func Benchmark_Cache_Miss_And_Server_Invalidate(b *testing.B) {
+	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
+	now := time.Now()
+	payloads := []string{
+		strings.Repeat("a", 64),
+		strings.Repeat("b", 1024),
+		strings.Repeat("c", 64*1024),
+	}
+	keys := make([]string, 100)
+	delMsgs := make([]ValkeyMessage, 100)
+	for i := 0; i < 100; i++ {
+		keys[i] = "inv_key_" + strconv.Itoa(i)
+		delMsgs[i] = strmsg('+', keys[i])
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		k := keys[i%100]
+		p := payloads[i%3]
+		v, entry := store.Flight(k, "GET "+k, time.Minute, now)
+		if v.typ == 0 && entry == nil {
+			msg := strmsg('+', p)
+			msg.setExpireAt(now.Add(time.Hour).UnixMilli())
+			store.Update(k, "GET "+k, msg)
+		}
+		if (i+1)%100 == 0 {
+			store.Delete(delMsgs)
+		}
 	}
 }

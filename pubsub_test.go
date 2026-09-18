@@ -1,6 +1,7 @@
 package valkey
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -98,14 +99,23 @@ func TestSubs_Unsubscribe(t *testing.T) {
 	}
 }
 
-// Benchmark_PubSub_Receive measures blocking loop message delivery in pubsub subscriptions.
-func Benchmark_PubSub_Receive(b *testing.B) {
+// Benchmark_PubSub_Dispatch_Loop measures blocking message dispatch loop under load across payload gradients.
+func Benchmark_PubSub_Dispatch_Loop(b *testing.B) {
 	s := newSubs()
 	ch, cancel := s.Subscribe([]string{"channel"}, nil)
 	s.Confirm(PubSubSubscription{Channel: "channel"})
 	defer cancel()
 
-	msg := PubSubMessage{Channel: "channel", Message: "payload"}
+	payloads := []string{
+		strings.Repeat("a", 64),
+		strings.Repeat("b", 1024),
+		strings.Repeat("c", 64*1024),
+	}
+	msgs := make([]PubSubMessage, 3)
+	for i := 0; i < 3; i++ {
+		msgs[i] = PubSubMessage{Channel: "channel", Message: payloads[i]}
+	}
+
 	ready := make(chan struct{})
 	done := make(chan struct{})
 	var wg sync.WaitGroup
@@ -113,12 +123,14 @@ func Benchmark_PubSub_Receive(b *testing.B) {
 
 	go func() {
 		defer wg.Done()
+		i := 0
 		for {
 			select {
 			case <-done:
 				return
 			case <-ready:
-				s.Publish("channel", msg)
+				s.Publish("channel", msgs[i%3])
+				i++
 			}
 		}
 	}()
@@ -132,4 +144,9 @@ func Benchmark_PubSub_Receive(b *testing.B) {
 	b.StopTimer()
 	close(done)
 	wg.Wait()
+}
+
+// Benchmark_PubSub_Receive is kept for backwards compatibility.
+func Benchmark_PubSub_Receive(b *testing.B) {
+	Benchmark_PubSub_Dispatch_Loop(b)
 }

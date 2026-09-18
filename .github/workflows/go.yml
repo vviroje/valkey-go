@@ -33,10 +33,10 @@ jobs:
             echo '{"lastUpdate":0,"repoUrl":"","entries":{"Benchmark":[]}}' > .github/benchmark-baseline.json
           fi
 
-      # 2. Run the 12 suite benchmarks on the commit
+      # 2. Run the 15 Two-Tier suite benchmarks on the commit
       - name: Run benchmarks
         run: |
-          go test -run=^$ -bench='^(Benchmark_Cache_DoCache_Hit|Benchmark_Cache_DoCache_Miss|Benchmark_Cache_MGetCache|Benchmark_Cache_Invalidation|Benchmark_Parallel_DoMulti|BenchmarkClient_B_Allocation|Benchmark_PubSub_Receive|BenchmarkRESP3WireDecoder_Latency|Benchmark_Ring_Multiplexer_Contention|BenchmarkRingBufferMultiplexer_Contention|Benchmark_ZAdd|BenchmarkCommandBuilder_Allocation)$' \
+          go test -run=^$ -bench='^(Benchmark_Builder_SingleCommand_DynamicKeys|Benchmark_Builder_MultiKey_Scaling|Benchmark_Builder_ComplexArgs_HSet_ZAdd|Benchmark_MemoryPool_PutCompleted_Parallel|Benchmark_RESP3_Decode_SimpleString|Benchmark_RESP3_Decode_BulkString_Gradient|Benchmark_RESP3_Decode_Array|Benchmark_RESP3_Decode_Map|Benchmark_Cluster_CRC16_Routing|Benchmark_Cache_LocalHit_Latency|Benchmark_Pipelining_Concurrency_1|Benchmark_Pipelining_Concurrency_8|Benchmark_Pipelining_Concurrency_64|Benchmark_Cache_Miss_And_Server_Invalidate|Benchmark_PubSub_Dispatch_Loop)$' \
             -benchmem . ./internal/cmds | tee output.txt
 
       # 3. Update baseline JSON file with github-action-benchmark (After merge / on push only)
