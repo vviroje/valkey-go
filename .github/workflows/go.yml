@@ -31,8 +31,8 @@ jobs:
       - name: Ensure baseline file exists
         run: |
           mkdir -p .github
-          if [ ! -f .github/benchmark-baseline.json ]; then
-            echo '{}' > .github/benchmark-baseline.json
+          if [ ! -f .github/benchmark-baseline.json ] || [ "$(tr -d '[:space:]' < .github/benchmark-baseline.json)" = "{}" ]; then
+            echo '{"lastUpdate":0,"repoUrl":"","entries":{"Benchmark":[]}}' > .github/benchmark-baseline.json
           fi
 
       # 2. Run the 12 suite benchmarks
