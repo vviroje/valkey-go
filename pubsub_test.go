@@ -1,6 +1,7 @@
 package valkey
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -99,54 +100,67 @@ func TestSubs_Unsubscribe(t *testing.T) {
 	}
 }
 
-// Benchmark_PubSub_Dispatch_Loop measures blocking message dispatch loop under load across payload gradients.
-func Benchmark_PubSub_Dispatch_Loop(b *testing.B) {
-	s := newSubs()
-	ch, cancel := s.Subscribe([]string{"channel"}, nil)
-	s.Confirm(PubSubSubscription{Channel: "channel"})
-	defer cancel()
-
-	payloads := []string{
-		strings.Repeat("a", 64),
-		strings.Repeat("b", 1024),
-		strings.Repeat("c", 64*1024),
+var (
+	pubsubChannels1000     []string
+	pubsubPayloadsGradient = map[string]string{
+		"64B":  strings.Repeat("a", 64),
+		"1KB":  strings.Repeat("b", 1024),
+		"64KB": strings.Repeat("c", 65536),
 	}
-	msgs := make([]PubSubMessage, 3)
-	for i := 0; i < 3; i++ {
-		msgs[i] = PubSubMessage{Channel: "channel", Message: payloads[i]}
+)
+
+func init() {
+	pubsubChannels1000 = make([]string, 1000)
+	for i := 0; i < 1000; i++ {
+		pubsubChannels1000[i] = "chan_" + strconv.Itoa(i)
 	}
-
-	ready := make(chan struct{})
-	done := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-		i := 0
-		for {
-			select {
-			case <-done:
-				return
-			case <-ready:
-				s.Publish("channel", msgs[i%3])
-				i++
-			}
-		}
-	}()
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ready <- struct{}{}
-		<-ch
-	}
-	b.StopTimer()
-	close(done)
-	wg.Wait()
 }
 
-// Benchmark_PubSub_Receive is kept for backwards compatibility.
+// Benchmark_PubSub_Receive measures blocking loop message delivery with dynamic channels and payload gradient.
 func Benchmark_PubSub_Receive(b *testing.B) {
-	Benchmark_PubSub_Dispatch_Loop(b)
+	for _, size := range []string{"64B", "1KB", "64KB"} {
+		payload := pubsubPayloadsGradient[size]
+		b.Run("Payload="+size, func(b *testing.B) {
+			s := newSubs()
+			ch, cancel := s.Subscribe(pubsubChannels1000, nil)
+			defer cancel()
+			for _, chName := range pubsubChannels1000 {
+				s.Confirm(PubSubSubscription{Channel: chName})
+			}
+
+			messages := make([]PubSubMessage, len(pubsubChannels1000))
+			for i, chName := range pubsubChannels1000 {
+				messages[i] = PubSubMessage{Channel: chName, Message: payload}
+			}
+
+			ready := make(chan struct{})
+			done := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+				idx := 0
+				for {
+					select {
+					case <-done:
+						return
+					case <-ready:
+						s.Publish(pubsubChannels1000[idx], messages[idx])
+						idx = (idx + 1) % len(pubsubChannels1000)
+					}
+				}
+			}()
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ready <- struct{}{}
+				<-ch
+			}
+			b.StopTimer()
+			close(done)
+			wg.Wait()
+		})
+	}
 }

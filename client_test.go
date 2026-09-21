@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -1765,7 +1764,123 @@ func BenchmarkSingleClient_DoCache(b *testing.B) {
 	client.Close()
 }
 
-func benchmarkPipelining(b *testing.B, concurrency int) {
+var (
+	clientDynamicKeys1000 = func() []string {
+		ks := make([]string, 1000)
+		for i := 0; i < 1000; i++ {
+			ks[i] = "k_" + strconv.Itoa(i)
+		}
+		return ks
+	}()
+	clientPayloadsGradient = []string{
+		strings.Repeat("a", 64),
+		strings.Repeat("b", 1024),
+		strings.Repeat("c", 64*1024),
+	}
+)
+
+// Benchmark_Parallel_Get measures concurrent reads under b.RunParallel using dynamic runtime keys (key_0..key_999).
+func Benchmark_Parallel_Get(b *testing.B) {
+	m := &mockConn{
+		DoFn: func(cmd Completed) ValkeyResult {
+			return NewResult(strmsg('+', "val"), nil)
+		},
+	}
+	client, err := newSingleClient(
+		&ClientOption{InitAddress: []string{""}},
+		m,
+		func(dst string, opt *ClientOption) conn { return m },
+		newRetryer(defaultRetryDelayFn),
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Close()
+
+	cmds := make([]Completed, 1000)
+	for i := 0; i < 1000; i++ {
+		cmds[i] = client.B().Get().Key(clientDynamicKeys1000[i]).Build().Pin()
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		ctx := context.Background()
+		i := 0
+		for pb.Next() {
+			_ = client.Do(ctx, cmds[i%1000])
+			i++
+		}
+	})
+}
+
+// Benchmark_Parallel_Set measures concurrent writes under b.RunParallel with dynamic keys and payload gradient (64B, 1KB, 64KB).
+func Benchmark_Parallel_Set(b *testing.B) {
+	m := &mockConn{
+		DoFn: func(cmd Completed) ValkeyResult {
+			return NewResult(strmsg('+', "OK"), nil)
+		},
+	}
+	client, err := newSingleClient(
+		&ClientOption{InitAddress: []string{""}},
+		m,
+		func(dst string, opt *ClientOption) conn { return m },
+		newRetryer(defaultRetryDelayFn),
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Close()
+
+	cmds := make([]Completed, 1000)
+	for i := 0; i < 1000; i++ {
+		cmds[i] = client.B().Set().Key(clientDynamicKeys1000[i]).Value(clientPayloadsGradient[i%3]).Build().Pin()
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		ctx := context.Background()
+		i := 0
+		for pb.Next() {
+			_ = client.Do(ctx, cmds[i%1000])
+			i++
+		}
+	})
+}
+
+// Benchmark_Parallel_Ping measures pure round-trip latency (PING) under b.RunParallel.
+func Benchmark_Parallel_Ping(b *testing.B) {
+	m := &mockConn{
+		DoFn: func(cmd Completed) ValkeyResult {
+			return NewResult(strmsg('+', "PONG"), nil)
+		},
+	}
+	client, err := newSingleClient(
+		&ClientOption{InitAddress: []string{""}},
+		m,
+		func(dst string, opt *ClientOption) conn { return m },
+		newRetryer(defaultRetryDelayFn),
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Close()
+
+	pingCmd := client.B().Ping().Build().Pin()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		ctx := context.Background()
+		for pb.Next() {
+			_ = client.Do(ctx, pingCmd)
+		}
+	})
+}
+
+// Benchmark_Parallel_DoMulti measures manual multi-command transaction pipelining under b.RunParallel with dynamic keys and 1KB payload.
+func Benchmark_Parallel_DoMulti(b *testing.B) {
 	m := &mockConn{
 		DoMultiFn: func(cmd ...Completed) *valkeyresults {
 			res := make([]ValkeyResult, len(cmd))
@@ -1787,61 +1902,17 @@ func benchmarkPipelining(b *testing.B, concurrency int) {
 	defer client.Close()
 
 	payload1KB := strings.Repeat("v", 1024)
-	keys := make([]string, 1000)
-	for i := 0; i < 1000; i++ {
-		keys[i] = "pipe_key_" + strconv.Itoa(i)
-	}
-
-	cmd1 := client.B().Set().Key(keys[0]).Value(payload1KB).Build()
-	cmd2 := client.B().Get().Key(keys[0]).Build()
-	ctx := context.Background()
+	cmd1 := client.B().Set().Key(clientDynamicKeys1000[0]).Value(payload1KB).Build().Pin()
+	cmd2 := client.B().Get().Key(clientDynamicKeys1000[0]).Build().Pin()
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	if concurrency <= 1 {
-		for i := 0; i < b.N; i++ {
+	b.RunParallel(func(pb *testing.PB) {
+		ctx := context.Background()
+		for pb.Next() {
 			_ = client.DoMulti(ctx, cmd1, cmd2)
 		}
-		return
-	}
-
-	work := make(chan struct{}, b.N)
-	for i := 0; i < b.N; i++ {
-		work <- struct{}{}
-	}
-	close(work)
-
-	var wg sync.WaitGroup
-	wg.Add(concurrency)
-	for c := 0; c < concurrency; c++ {
-		go func() {
-			defer wg.Done()
-			for range work {
-				_ = client.DoMulti(ctx, cmd1, cmd2)
-			}
-		}()
-	}
-	wg.Wait()
-}
-
-// Benchmark_Pipelining_Concurrency_1 measures single-thread serial pipelining throughput.
-func Benchmark_Pipelining_Concurrency_1(b *testing.B) {
-	benchmarkPipelining(b, 1)
-}
-
-// Benchmark_Pipelining_Concurrency_8 measures auto-pipelining throughput under 8 concurrent goroutines.
-func Benchmark_Pipelining_Concurrency_8(b *testing.B) {
-	benchmarkPipelining(b, 8)
-}
-
-// Benchmark_Pipelining_Concurrency_64 measures auto-pipelining throughput under 64 concurrent goroutines.
-func Benchmark_Pipelining_Concurrency_64(b *testing.B) {
-	benchmarkPipelining(b, 64)
-}
-
-// Benchmark_Parallel_DoMulti is kept for backwards compatibility.
-func Benchmark_Parallel_DoMulti(b *testing.B) {
-	Benchmark_Pipelining_Concurrency_8(b)
+	})
 }
 
 // BenchmarkClient_B_Allocation measures the allocation of client.B() command construction.

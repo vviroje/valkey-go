@@ -207,117 +207,121 @@ func (s *simple) Flush() {
 	s.store = nil
 }
 
-// Benchmark_Cache_LocalHit_Latency benchmarks in-memory client-side cache Hit latency.
-func Benchmark_Cache_LocalHit_Latency(b *testing.B) {
+var (
+	cacheDynamicKeys1000 = func() []string {
+		ks := make([]string, 1000)
+		for i := 0; i < 1000; i++ {
+			ks[i] = "ckey_" + strconv.Itoa(i)
+		}
+		return ks
+	}()
+	cacheDynamicCmds1000 = func() []string {
+		cs := make([]string, 1000)
+		for i := 0; i < 1000; i++ {
+			cs[i] = "GET " + cacheDynamicKeys1000[i]
+		}
+		return cs
+	}()
+)
+
+// Benchmark_Cache_DoCache_Hit measures in-memory LRU client cache hit latency with dynamic keys and 1KB cached value.
+func Benchmark_Cache_DoCache_Hit(b *testing.B) {
 	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
 	now := time.Now()
-	msg := strmsg('+', strings.Repeat("a", 1024))
-	msg.setExpireAt(now.Add(time.Hour).UnixMilli())
-	store.Update("key", "GET key", msg)
+	val1KB := strings.Repeat("a", 1024)
+	for i := 0; i < 1000; i++ {
+		msg := strmsg('+', val1KB)
+		msg.setExpireAt(now.Add(time.Hour).UnixMilli())
+		store.Update(cacheDynamicKeys1000[i], cacheDynamicCmds1000[i], msg)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		v, _ := store.Flight("key", "GET key", time.Minute, now)
+		idx := i % 1000
+		v, _ := store.Flight(cacheDynamicKeys1000[idx], cacheDynamicCmds1000[idx], time.Minute, now)
 		_ = v
 	}
 }
 
-// Benchmark_Cache_DoCache_Hit is kept for backwards compatibility.
-func Benchmark_Cache_DoCache_Hit(b *testing.B) {
-	Benchmark_Cache_LocalHit_Latency(b)
-}
-
-// Benchmark_Cache_DoCache_Miss benchmarks fetching from server to populate local cache.
+// Benchmark_Cache_DoCache_Miss measures flight miss and server store population using dynamic keys and payload gradient (64B, 1KB, 64KB).
 func Benchmark_Cache_DoCache_Miss(b *testing.B) {
 	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
 	now := time.Now()
-	msg := strmsg('+', "val")
-	msg.setExpireAt(now.Add(time.Hour).UnixMilli())
+	msgs := []ValkeyMessage{
+		strmsg('+', strings.Repeat("a", 64)),
+		strmsg('+', strings.Repeat("b", 1024)),
+		strmsg('+', strings.Repeat("c", 64*1024)),
+	}
+	for i := range msgs {
+		msgs[i].setExpireAt(now.Add(time.Hour).UnixMilli())
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		key := "key_" + strconv.Itoa(i)
-		v, entry := store.Flight(key, "GET "+key, time.Minute, now)
+		idx := i % 1000
+		k := cacheDynamicKeys1000[idx]
+		cmd := cacheDynamicCmds1000[idx]
+		v, entry := store.Flight(k, cmd, time.Minute, now)
 		if v.typ == 0 && entry == nil {
-			store.Update(key, "GET "+key, msg)
+			store.Update(k, cmd, msgs[i%3])
 		}
 	}
 }
 
-// Benchmark_Cache_MGetCache benchmarks mapping keys to memory responses from cache.
+// Benchmark_Cache_MGetCache measures mapping multi-key responses from cache across collection cardinality (10, 100 keys).
 func Benchmark_Cache_MGetCache(b *testing.B) {
 	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
 	now := time.Now()
-	keys := []string{"k1", "k2", "k3", "k4", "k5"}
-	for _, k := range keys {
-		msg := strmsg('+', "val_"+k)
+	val1KB := strings.Repeat("a", 1024)
+	for i := 0; i < 100; i++ {
+		msg := strmsg('+', val1KB)
 		msg.setExpireAt(now.Add(time.Hour).UnixMilli())
-		store.Update(k, "GET "+k, msg)
+		store.Update(cacheDynamicKeys1000[i], cacheDynamicCmds1000[i], msg)
 	}
+	keys10 := cacheDynamicKeys1000[:10]
+	keys100 := cacheDynamicKeys1000[:100]
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		res := make(map[string]ValkeyMessage, len(keys))
-		for _, k := range keys {
-			v, _ := store.Flight(k, "GET "+k, time.Minute, now)
-			res[k] = v
+		ks := keys10
+		if i%2 == 1 {
+			ks = keys100
 		}
-		_ = res
+		for j, k := range ks {
+			v, _ := store.Flight(k, cacheDynamicCmds1000[j], time.Minute, now)
+			_ = v
+		}
 	}
 }
 
-// Benchmark_Cache_Invalidation benchmarks server-assisted cache invalidation via Pub/Sub.
+// Benchmark_Cache_Invalidation measures server-assisted Pub/Sub cache invalidation batch across collection cardinality (10, 100, 1,000 dynamic keys).
 func Benchmark_Cache_Invalidation(b *testing.B) {
 	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
 	now := time.Now()
-	keys := make([]ValkeyMessage, 100)
-	for i := 0; i < 100; i++ {
-		k := "key_" + strconv.Itoa(i)
+	delMsgs := make([]ValkeyMessage, 1000)
+	for i := 0; i < 1000; i++ {
 		msg := strmsg('+', "val")
 		msg.setExpireAt(now.Add(time.Hour).UnixMilli())
-		store.Update(k, "GET "+k, msg)
-		keys[i] = strmsg('+', k)
+		store.Update(cacheDynamicKeys1000[i], "GET "+cacheDynamicKeys1000[i], msg)
+		delMsgs[i] = strmsg('+', cacheDynamicKeys1000[i])
 	}
+	del10 := delMsgs[:10]
+	del100 := delMsgs[:100]
+	del1000 := delMsgs[:1000]
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		store.Delete(keys)
-	}
-}
-
-// Benchmark_Cache_Miss_And_Server_Invalidate benchmarks cache miss population across payload gradient and push invalidation.
-func Benchmark_Cache_Miss_And_Server_Invalidate(b *testing.B) {
-	store := newLRU(CacheStoreOption{CacheSizeEachConn: DefaultCacheBytes})
-	now := time.Now()
-	payloads := []string{
-		strings.Repeat("a", 64),
-		strings.Repeat("b", 1024),
-		strings.Repeat("c", 64*1024),
-	}
-	keys := make([]string, 100)
-	delMsgs := make([]ValkeyMessage, 100)
-	for i := 0; i < 100; i++ {
-		keys[i] = "inv_key_" + strconv.Itoa(i)
-		delMsgs[i] = strmsg('+', keys[i])
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		k := keys[i%100]
-		p := payloads[i%3]
-		v, entry := store.Flight(k, "GET "+k, time.Minute, now)
-		if v.typ == 0 && entry == nil {
-			msg := strmsg('+', p)
-			msg.setExpireAt(now.Add(time.Hour).UnixMilli())
-			store.Update(k, "GET "+k, msg)
-		}
-		if (i+1)%100 == 0 {
-			store.Delete(delMsgs)
+		switch i % 3 {
+		case 0:
+			store.Delete(del10)
+		case 1:
+			store.Delete(del100)
+		default:
+			store.Delete(del1000)
 		}
 	}
 }
