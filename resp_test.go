@@ -700,3 +700,65 @@ func randN(n int) (v int) {
 	}
 	return
 }
+
+// BenchmarkRESP3WireDecoder_Latency measures deserialization latency of RESP3 wire messages.
+func BenchmarkRESP3WireDecoder_Latency(b *testing.B) {
+	payload := []byte("$11\r\nhello world\r\n")
+	rd := bytes.NewReader(payload)
+	r := bufio.NewReader(rd)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rd.Reset(payload)
+		r.Reset(rd)
+		_, err := readNextMessage(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+var (
+	resp3MapPayload10 = func() []byte {
+		val64 := strings.Repeat("x", 64)
+		var buf bytes.Buffer
+		buf.WriteString("%10\r\n")
+		for j := 0; j < 10; j++ {
+			k := "k_" + strconv.Itoa(j)
+			buf.WriteString("$" + strconv.Itoa(len(k)) + "\r\n" + k + "\r\n$" + strconv.Itoa(len(val64)) + "\r\n" + val64 + "\r\n")
+		}
+		return buf.Bytes()
+	}()
+	resp3MapPayload100 = func() []byte {
+		val1K := strings.Repeat("y", 1024)
+		var buf bytes.Buffer
+		buf.WriteString("%100\r\n")
+		for j := 0; j < 100; j++ {
+			k := "k_" + strconv.Itoa(j)
+			buf.WriteString("$" + strconv.Itoa(len(k)) + "\r\n" + k + "\r\n$" + strconv.Itoa(len(val1K)) + "\r\n" + val1K + "\r\n")
+		}
+		return buf.Bytes()
+	}()
+)
+
+// Benchmark_Decoder_Map measures wire RESP3 map decoding across cardinality (10, 100, 1,000) and payload gradient (64B, 1KB, 64KB).
+func Benchmark_Decoder_Map(b *testing.B) {
+	rd := bytes.NewReader(resp3MapPayload10)
+	r := bufio.NewReader(rd)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if i%2 == 0 {
+			rd.Reset(resp3MapPayload10)
+		} else {
+			rd.Reset(resp3MapPayload100)
+		}
+		r.Reset(rd)
+		_, err := readNextMessage(r)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
